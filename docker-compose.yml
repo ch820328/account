@@ -1,0 +1,24 @@
+# Local development: just Postgres. Run the app on the host with `pnpm dev`.
+# All values come from .env (see .env.example).
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-accounting}-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-accounting}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-accounting}
+      POSTGRES_DB: ${POSTGRES_DB:-accounting}
+      TZ: ${TZ:-Asia/Taipei}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-accounting} -d ${POSTGRES_DB:-accounting}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:

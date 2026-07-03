@@ -1,0 +1,581 @@
+:root {
+  --bg: #0b0f14;
+  --surface: #141b24;
+  --surface-2: #1b2530;
+  --border: #26313d;
+  --text: #e6edf3;
+  --muted: #8b97a5;
+  --accent: #4f8cff;
+  --income: #35c48d;
+  --expense: #ff6b6b;
+  --radius: 14px;
+  --shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: clip;
+}
+
+html {
+  overflow-x: hidden;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.container {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 24px 20px 80px;
+  min-width: 0;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: rgba(11, 15, 20, 0.85);
+  backdrop-filter: blur(10px);
+  z-index: 10;
+  min-width: 0;
+}
+
+.brand {
+  font-weight: 700;
+  font-size: 18px;
+  letter-spacing: 0.3px;
+  flex-shrink: 0;
+}
+
+.nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.nav a {
+  color: var(--muted);
+  font-size: 14px;
+  white-space: nowrap;
+}
+.nav a:hover {
+  color: var(--text);
+}
+
+.nav .btn.ghost {
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.grid {
+  display: grid;
+  gap: 16px;
+}
+.grid.cols-3 {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  box-shadow: var(--shadow);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.card h3 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.stat {
+  font-size: clamp(20px, 4.5vw, 26px);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+  word-break: break-word;
+}
+.stat.income {
+  color: var(--income);
+}
+.stat.expense {
+  color: var(--expense);
+}
+
+.income {
+  color: var(--income);
+}
+.expense {
+  color: var(--expense);
+}
+
+.money {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+.money.income,
+.money.expense {
+  font-weight: 700;
+}
+
+.card.hero {
+  padding: 24px 22px;
+}
+
+.badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  background: var(--surface-2);
+  color: var(--muted);
+  vertical-align: middle;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.badge.income {
+  background: rgba(53, 196, 141, 0.15);
+  color: var(--income);
+}
+.badge.expense {
+  background: rgba(255, 107, 107, 0.15);
+  color: var(--expense);
+}
+.badge.muted-badge {
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.grid.cols-2 {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+}
+
+.card-link {
+  display: block;
+  color: inherit;
+  transition: border-color 0.15s ease;
+}
+.card-link:hover {
+  border-color: var(--accent);
+  color: inherit;
+}
+
+.nav-dropdown {
+  position: relative;
+}
+.nav-dropdown-trigger {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0;
+}
+.nav-dropdown-trigger:hover {
+  color: var(--text);
+}
+.nav-dropdown-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 8px;
+  min-width: 140px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px 0;
+  box-shadow: var(--shadow);
+  z-index: 20;
+}
+.nav-dropdown-menu a {
+  display: block;
+  padding: 10px 16px;
+  color: var(--text);
+  font-size: 14px;
+}
+.nav-dropdown-menu a:hover {
+  background: var(--surface-2);
+}
+
+.payroll-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+@media (max-width: 640px) {
+  .payroll-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.payroll-mini-table {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-top: 10px;
+  font-size: 12px;
+  max-width: 100%;
+}
+
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-width: 100%;
+}
+
+.forecast-table {
+  min-width: 680px;
+  border: none;
+  border-radius: 0;
+  overflow: visible;
+}
+
+.forecast-table .forecast-head,
+.forecast-table .forecast-row {
+  display: grid;
+  grid-template-columns: 64px minmax(72px, 1fr) minmax(72px, 1fr) minmax(72px, 1fr) minmax(72px, 1fr) minmax(88px, 1.1fr) minmax(100px, auto);
+  gap: 6px 8px;
+  align-items: center;
+  font-size: 12px;
+  padding: 12px 14px;
+}
+
+.forecast-table .forecast-head {
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--surface-2);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.forecast-table .forecast-row > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.forecast-table .forecast-row .row-inline {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.forecast-input {
+  width: 100%;
+  max-width: 88px;
+  padding: 4px 8px;
+  font-size: 13px;
+}
+
+@media (max-width: 720px) {
+  .forecast-table {
+    min-width: 0;
+  }
+  .forecast-table .forecast-head {
+    display: none;
+  }
+  .forecast-table .forecast-row {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    padding: 14px 16px;
+  }
+  .forecast-table .forecast-row > span {
+    white-space: normal;
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .forecast-table .forecast-row > span::before {
+    color: var(--muted);
+    font-weight: 500;
+    flex-shrink: 0;
+  }
+  .forecast-table .forecast-row > span:nth-child(1)::before { content: "月份"; }
+  .forecast-table .forecast-row > span:nth-child(2)::before { content: "收入"; }
+  .forecast-table .forecast-row > span:nth-child(3)::before { content: "固定支出"; }
+  .forecast-table .forecast-row > span:nth-child(4)::before { content: "生活費"; }
+  .forecast-table .forecast-row > span:nth-child(5)::before { content: "淨流"; }
+  .forecast-table .forecast-row > span:nth-child(6)::before { content: "淨資產"; }
+  .forecast-table .forecast-row .row-inline {
+    justify-content: flex-start;
+    width: 100%;
+  }
+}
+
+.section-title {
+  font-size: 15px;
+  color: var(--muted);
+  margin: 28px 0 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  max-width: 100%;
+}
+
+.list-item {
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.list-item:last-child {
+  border-bottom: none;
+}
+.list-item.editing {
+  background: var(--surface-2);
+}
+.list-item .row {
+  border-bottom: none;
+}
+.list-item.finished {
+  background: var(--surface-2);
+  opacity: 0.72;
+}
+.list-item.finished .primary,
+.list-item.finished .secondary {
+  color: var(--muted);
+}
+.list-item.finished .amount,
+.list-item.finished .money {
+  color: var(--muted) !important;
+}
+
+.row-edit-panel {
+  padding: 14px 16px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.row-edit-panel form {
+  display: grid;
+  gap: 12px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  min-width: 0;
+}
+
+.row .meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 120px;
+}
+
+.row .primary {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: break-word;
+}
+
+.row:last-child {
+  border-bottom: none;
+}
+.row .secondary {
+  font-size: 13px;
+  color: var(--muted);
+}
+.amount {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.amount.income {
+  color: var(--income);
+}
+.amount.expense {
+  color: var(--expense);
+}
+
+form.card {
+  display: grid;
+  gap: 12px;
+}
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+  min-width: 0;
+}
+
+input,
+select,
+button {
+  font: inherit;
+  max-width: 100%;
+}
+
+input,
+select {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 10px 12px;
+  outline: none;
+  width: 100%;
+}
+input:focus,
+select:focus {
+  border-color: var(--accent);
+}
+
+.btn {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 10px;
+  padding: 11px 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+.btn:hover {
+  opacity: 0.9;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn.ghost {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.seg {
+  display: inline-flex;
+  flex-wrap: wrap;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.seg button {
+  background: var(--surface-2);
+  border: none;
+  color: var(--muted);
+  padding: 10px 14px;
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+  flex: 1 1 auto;
+  min-width: fit-content;
+}
+.seg button.active {
+  background: var(--accent);
+  color: white;
+}
+
+.muted {
+  color: var(--muted);
+}
+.error {
+  color: var(--expense);
+  font-size: 13px;
+}
+.center {
+  min-height: 70vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.auth-card {
+  width: 100%;
+  max-width: 380px;
+}
+.row-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.row-inline .btn.ghost {
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.payroll-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+  align-items: center;
+}
+
+.payroll-line input {
+  flex: 1 1 100px;
+  min-width: 0;
+}
+
+.payroll-line input:first-of-type {
+  flex: 2 1 140px;
+}
+
+@media (max-width: 640px) {
+  .topbar {
+    flex-wrap: wrap;
+  }
+  .nav {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}

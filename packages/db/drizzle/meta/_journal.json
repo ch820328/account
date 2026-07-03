@@ -1,0 +1,41 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1782972215697,
+      "tag": "0000_real_loki",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1783047186415,
+      "tag": "0001_perfect_blackheart",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783059947943,
+      "tag": "0002_medical_microbe",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1783061570713,
+      "tag": "0003_fearless_abomination",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1783064223976,
+      "tag": "0004_goofy_khan",
+      "breakpoints": true
+    }
+  ]
+}

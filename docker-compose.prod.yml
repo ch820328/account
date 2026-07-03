@@ -1,0 +1,103 @@
+# Production / self-hosted stack (DigitalOcean VM).
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Everything is driven by .env (see .env.example). Expose the `web` service to
+# the internet via Cloudflare Tunnel pointing at http://localhost:${WEB_PORT}.
+x-db-url: &db-url
+  DATABASE_URL: postgresql://${POSTGRES_USER:-accounting}:${POSTGRES_PASSWORD:-accounting}@db:5432/${POSTGRES_DB:-accounting}
+
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-accounting}-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-accounting}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-accounting}
+      POSTGRES_DB: ${POSTGRES_DB:-accounting}
+      TZ: ${TZ:-Asia/Taipei}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-accounting} -d ${POSTGRES_DB:-accounting}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-off: apply migrations then seed reference data, then exit.
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    image: ${COMPOSE_PROJECT_NAME:-accounting}-worker
+    restart: "no"
+    environment:
+      <<: *db-url
+      TZ: ${TZ:-Asia/Taipei}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3000}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
+      AUTH_EMAIL_DOMAIN: ${AUTH_EMAIL_DOMAIN:-users.example.com}
+    command: sh -c "pnpm --filter @acc/db migrate && pnpm --filter @acc/db seed && pnpm --filter @acc/web seed-admin"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+    image: ${COMPOSE_PROJECT_NAME:-accounting}-web
+    restart: unless-stopped
+    environment:
+      <<: *db-url
+      NODE_ENV: production
+      PORT: ${WEB_INTERNAL_PORT:-3000}
+      TZ: ${TZ:-Asia/Taipei}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3000}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+      TRUSTED_ORIGINS: ${TRUSTED_ORIGINS:-}
+      SESSION_EXPIRES_DAYS: ${SESSION_EXPIRES_DAYS:-7}
+      SESSION_UPDATE_MINUTES: ${SESSION_UPDATE_MINUTES:-15}
+      APP_BASE_CURRENCY: ${APP_BASE_CURRENCY:-TWD}
+      SYNC_API_KEY: ${SYNC_API_KEY:-}
+      SYNC_USER_ID: ${SYNC_USER_ID:-}
+    ports:
+      - "${WEB_PORT:-3000}:${WEB_INTERNAL_PORT:-3000}"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    image: ${COMPOSE_PROJECT_NAME:-accounting}-worker
+    restart: unless-stopped
+    environment:
+      <<: *db-url
+      NODE_ENV: production
+      TZ: ${TZ:-Asia/Taipei}
+      APP_BASE_CURRENCY: ${APP_BASE_CURRENCY:-TWD}
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BUCKET: ${R2_BUCKET:-}
+      R2_ENDPOINT: ${R2_ENDPOINT:-}
+      BACKUP_CRON: ${BACKUP_CRON:-"0 3 * * *"}
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:

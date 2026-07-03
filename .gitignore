@@ -1,0 +1,30 @@
+node_modules/
+.pnpm-store/
+dist/
+.next/
+out/
+build/
+coverage/
+
+# env
+.env
+.env.local
+.env.*.local
+
+# turbo
+.turbo/
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# os / editor
+.DS_Store
+*.swp
+
+# db / backups
+*.sqlite
+*.sqlite3
+backups/
+pgdata/
