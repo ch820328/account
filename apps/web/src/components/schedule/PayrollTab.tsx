@@ -1,6 +1,7 @@
 "use client";
 
 import { Amount } from "@/components/Amount";
+import { EditableRow } from "@/components/schedule/EditableRow";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useMemo, useState } from "react";
 
@@ -30,72 +31,205 @@ function previewTotals(lines: LineDraft[]) {
   return { earn, ded, net: earn - ded };
 }
 
+interface PayrollFormValues {
+  name: string;
+  depositAccountId: string;
+  dayOfMonth: string;
+  lines: LineDraft[];
+}
+
+function PayrollForm({
+  accounts,
+  initial,
+  submitLabel,
+  pending,
+  error,
+  onSubmit,
+  onCancel,
+}: {
+  accounts: { id: string; name: string }[];
+  initial: PayrollFormValues;
+  submitLabel: string;
+  pending: boolean;
+  error: string | null;
+  onSubmit: (values: { name: string; depositAccountId: string; dayOfMonth: number; lines: LineDraft[] }) => void;
+  onCancel?: () => void;
+}) {
+  const [name, setName] = useState(initial.name);
+  const [depositAccountId, setDepositAccountId] = useState(initial.depositAccountId);
+  const [dayOfMonth, setDayOfMonth] = useState(initial.dayOfMonth);
+  const [lines, setLines] = useState<LineDraft[]>(initial.lines);
+
+  const totals = useMemo(() => previewTotals(lines), [lines]);
+
+  useEffect(() => {
+    if (!depositAccountId && accounts.length) setDepositAccountId(accounts[0]!.id);
+  }, [accounts, depositAccountId]);
+
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!depositAccountId) return;
+        onSubmit({
+          name,
+          depositAccountId,
+          dayOfMonth: Number(dayOfMonth),
+          lines: lines.filter((l) => l.name.trim()),
+        });
+      }}
+    >
+      <div className="grid cols-3">
+        <label>
+          名稱
+          <input value={name} onChange={(e) => setName(e.target.value)} />
+        </label>
+        <label>
+          入帳帳戶
+          <select value={depositAccountId} onChange={(e) => setDepositAccountId(e.target.value)}>
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          每月入帳日
+          <input
+            inputMode="numeric"
+            min={1}
+            max={31}
+            value={dayOfMonth}
+            onChange={(e) => setDayOfMonth(e.target.value)}
+          />
+        </label>
+      </div>
+
+      <div className="payroll-grid">
+        <div>
+          <div className="section-title" style={{ marginTop: 8 }}>
+            收入項目
+          </div>
+          {lines
+            .map((line, idx) => ({ line, idx }))
+            .filter(({ line }) => line.kind === "earning")
+            .map(({ line, idx }) => (
+              <PayrollLineRow
+                key={idx}
+                line={line}
+                onChange={(l) => setLines((prev) => prev.map((x, i) => (i === idx ? l : x)))}
+                onRemove={() => setLines((prev) => prev.filter((_, i) => i !== idx))}
+              />
+            ))}
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => setLines((prev) => [...prev, { name: "", kind: "earning", amount: "0" }])}
+          >
+            + 收入
+          </button>
+        </div>
+        <div>
+          <div className="section-title" style={{ marginTop: 8 }}>
+            扣款項目
+          </div>
+          {lines
+            .map((line, idx) => ({ line, idx }))
+            .filter(({ line }) => line.kind === "deduction")
+            .map(({ line, idx }) => (
+              <PayrollLineRow
+                key={idx}
+                line={line}
+                onChange={(l) => setLines((prev) => prev.map((x, i) => (i === idx ? l : x)))}
+                onRemove={() => setLines((prev) => prev.filter((_, i) => i !== idx))}
+              />
+            ))}
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => setLines((prev) => [...prev, { name: "", kind: "deduction", amount: "0" }])}
+          >
+            + 扣款
+          </button>
+        </div>
+      </div>
+
+      <div className="card" style={{ background: "var(--surface-2)", marginTop: 8 }}>
+        <div className="row-inline" style={{ justifyContent: "space-between" }}>
+          <span className="income">收入 ${totals.earn.toLocaleString()}</span>
+          <span className="expense">扣款 ${totals.ded.toLocaleString()}</span>
+          <span className="primary" style={{ fontWeight: 700 }}>
+            實領 ${totals.net.toLocaleString()}
+          </span>
+        </div>
+      </div>
+
+      {error && <div className="error">{error}</div>}
+      <div className="row-inline">
+        <button className="btn" type="submit" disabled={pending}>
+          {pending ? "儲存中…" : submitLabel}
+        </button>
+        {onCancel && (
+          <button type="button" className="btn ghost" onClick={onCancel}>
+            取消
+          </button>
+        )}
+      </div>
+    </form>
+  );
+}
+
+type ProfileRow = {
+  id: string;
+  name: string;
+  depositAccountId: string;
+  dayOfMonth: number;
+  nextRunDate: string;
+  currency: string;
+  active: boolean;
+  totals: { netMinor: bigint };
+  lines: { id: string; name: string; kind: string; amountMinor: bigint }[];
+};
+
 export function PayrollTab() {
   const utils = trpc.useUtils();
   const profiles = trpc.payroll.list.useQuery();
   const accounts = trpc.accounts.list.useQuery();
 
+  const [createError, setCreateError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [name, setName] = useState("月薪");
-  const [depositAccountId, setDepositAccountId] = useState("");
-  const [dayOfMonth, setDayOfMonth] = useState("25");
-  const [lines, setLines] = useState<LineDraft[]>(DEFAULT_LINES);
-  const [error, setError] = useState<string | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
+  const [createKey, setCreateKey] = useState(0);
+
+  const invalidate = () =>
+    Promise.all([
+      utils.payroll.list.invalidate(),
+      utils.forecast.projection.invalidate(),
+    ]);
 
   const create = trpc.payroll.create.useMutation({
     onSuccess: async () => {
-      await utils.payroll.list.invalidate();
-      resetForm();
+      await invalidate();
+      setCreateError(null);
+      setCreateKey((k) => k + 1);
     },
-    onError: (e) => setError(e.message),
+    onError: (e) => setCreateError(e.message),
   });
 
   const update = trpc.payroll.update.useMutation({
     onSuccess: async () => {
-      await utils.payroll.list.invalidate();
-      resetForm();
+      await invalidate();
+      setEditingId(null);
+      setEditError(null);
     },
-    onError: (e) => setError(e.message),
+    onError: (e) => setEditError(e.message),
   });
 
-  const setActive = trpc.payroll.setActive.useMutation({
-    onSuccess: () => utils.payroll.list.invalidate(),
-  });
-  const remove = trpc.payroll.delete.useMutation({
-    onSuccess: () => utils.payroll.list.invalidate(),
-  });
+  const setActive = trpc.payroll.setActive.useMutation({ onSuccess: invalidate });
+  const remove = trpc.payroll.delete.useMutation({ onSuccess: invalidate });
 
-  const totals = useMemo(() => previewTotals(lines), [lines]);
-
-  useEffect(() => {
-    if (!depositAccountId && accounts.data?.length) {
-      setDepositAccountId(accounts.data[0]!.id);
-    }
-  }, [accounts.data, depositAccountId]);
-
-  function resetForm() {
-    setEditingId(null);
-    setName("月薪");
-    setLines(DEFAULT_LINES);
-    setDayOfMonth("25");
-    setError(null);
-  }
-
-  function loadProfile(id: string) {
-    const p = profiles.data?.find((x) => x.id === id);
-    if (!p) return;
-    setEditingId(p.id);
-    setName(p.name);
-    setDepositAccountId(p.depositAccountId);
-    setDayOfMonth(String(p.dayOfMonth));
-    setLines(
-      p.lines.map((l) => ({
-        name: l.name,
-        kind: l.kind as "earning" | "deduction",
-        amount: String(Number(l.amountMinor) / 100),
-      })),
-    );
-  }
+  const accountOptions = accounts.data ?? [];
 
   return (
     <div>
@@ -103,124 +237,25 @@ export function PayrollTab() {
         設定薪資收入與扣款項目，每月固定日期自動記帳。實領 = 收入合計 − 扣款合計。
       </p>
 
-      <form
-        className="card"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (!depositAccountId) return;
-          setError(null);
-          const payload = {
-            name,
-            depositAccountId,
-            dayOfMonth: Number(dayOfMonth),
-            lines: lines.filter((l) => l.name.trim()),
-          };
-          if (editingId) update.mutate({ id: editingId, ...payload });
-          else create.mutate(payload);
-        }}
-      >
-        <div className="grid cols-3">
-          <label>
-            名稱
-            <input value={name} onChange={(e) => setName(e.target.value)} />
-          </label>
-          <label>
-            入帳帳戶
-            <select value={depositAccountId} onChange={(e) => setDepositAccountId(e.target.value)}>
-              {(accounts.data ?? []).map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            每月入帳日
-            <input
-              inputMode="numeric"
-              min={1}
-              max={31}
-              value={dayOfMonth}
-              onChange={(e) => setDayOfMonth(e.target.value)}
-            />
-          </label>
-        </div>
-
-        <div className="payroll-grid">
-          <div>
-            <div className="section-title" style={{ marginTop: 8 }}>
-              收入項目
-            </div>
-            {lines
-              .map((line, idx) => ({ line, idx }))
-              .filter(({ line }) => line.kind === "earning")
-              .map(({ line, idx }) => (
-                <PayrollLineRow
-                  key={idx}
-                  line={line}
-                  onChange={(l) => setLines((prev) => prev.map((x, i) => (i === idx ? l : x)))}
-                  onRemove={() => setLines((prev) => prev.filter((_, i) => i !== idx))}
-                />
-              ))}
-            <button
-              type="button"
-              className="btn ghost"
-              onClick={() =>
-                setLines((prev) => [...prev, { name: "", kind: "earning", amount: "0" }])
-              }
-            >
-              + 收入
-            </button>
-          </div>
-          <div>
-            <div className="section-title" style={{ marginTop: 8 }}>
-              扣款項目
-            </div>
-            {lines
-              .map((line, idx) => ({ line, idx }))
-              .filter(({ line }) => line.kind === "deduction")
-              .map(({ line, idx }) => (
-                <PayrollLineRow
-                  key={idx}
-                  line={line}
-                  onChange={(l) => setLines((prev) => prev.map((x, i) => (i === idx ? l : x)))}
-                  onRemove={() => setLines((prev) => prev.filter((_, i) => i !== idx))}
-                />
-              ))}
-            <button
-              type="button"
-              className="btn ghost"
-              onClick={() =>
-                setLines((prev) => [...prev, { name: "", kind: "deduction", amount: "0" }])
-              }
-            >
-              + 扣款
-            </button>
-          </div>
-        </div>
-
-        <div className="card" style={{ background: "var(--surface-2)", marginTop: 8 }}>
-          <div className="row-inline" style={{ justifyContent: "space-between" }}>
-            <span className="income">收入 ${totals.earn.toLocaleString()}</span>
-            <span className="expense">扣款 ${totals.ded.toLocaleString()}</span>
-            <span className="primary" style={{ fontWeight: 700 }}>
-              實領 ${totals.net.toLocaleString()}
-            </span>
-          </div>
-        </div>
-
-        {error && <div className="error">{error}</div>}
-        <div className="row-inline">
-          <button className="btn" disabled={create.isPending || update.isPending}>
-            {editingId ? "儲存變更" : "新增薪資單"}
-          </button>
-          {editingId && (
-            <button type="button" className="btn ghost" onClick={resetForm}>
-              取消編輯
-            </button>
-          )}
-        </div>
-      </form>
+      <div className="card">
+        <PayrollForm
+          key={createKey}
+          accounts={accountOptions}
+          initial={{
+            name: "月薪",
+            depositAccountId: accountOptions[0]?.id ?? "",
+            dayOfMonth: "25",
+            lines: DEFAULT_LINES,
+          }}
+          submitLabel="新增薪資單"
+          pending={create.isPending}
+          error={createError}
+          onSubmit={(v) => {
+            setCreateError(null);
+            create.mutate(v);
+          }}
+        />
+      </div>
 
       <div className="section-title">已設定薪資</div>
       {profiles.isLoading ? (
@@ -229,56 +264,71 @@ export function PayrollTab() {
         <div className="muted">尚無薪資單。</div>
       ) : (
         <div className="list">
-          {profiles.data.map((p) => (
-            <div className="row" key={p.id} style={{ flexDirection: "column", alignItems: "stretch" }}>
-              <div className="row-inline" style={{ justifyContent: "space-between", width: "100%" }}>
-                <div className="meta">
-                  <span className="primary">
-                    {p.name}
-                    {!p.active && <span className="badge muted-badge">已暫停</span>}
+          {(profiles.data as ProfileRow[]).map((p) => (
+            <EditableRow
+              key={p.id}
+              editing={editingId === p.id}
+              onEdit={() => {
+                setEditError(null);
+                setEditingId(p.id);
+              }}
+              onClose={() => setEditingId(null)}
+              onDelete={() => {
+                if (confirm(`刪除「${p.name}」？`)) remove.mutate({ id: p.id });
+              }}
+              active={p.active}
+              onToggleActive={() => setActive.mutate({ id: p.id, active: !p.active })}
+              primary={
+                <>
+                  {p.name}
+                  {!p.active && <span className="badge muted-badge">已暫停</span>}
+                </>
+              }
+              secondary={
+                <>
+                  每月 {p.dayOfMonth} 日 · 下次 {p.nextRunDate} · 實領{" "}
+                  <Amount value={p.totals.netMinor} currency={p.currency} kind="income" variant="inline" />
+                  <span className="payroll-mini-table">
+                    {p.lines.map((l) => (
+                      <span key={l.id} className={l.kind === "earning" ? "income" : "expense"}>
+                        {l.name}{" "}
+                        <Amount
+                          value={l.amountMinor}
+                          currency={p.currency}
+                          kind={l.kind === "earning" ? "income" : "expense"}
+                          signed={l.kind === "deduction"}
+                          variant="inline"
+                        />
+                      </span>
+                    ))}
                   </span>
-                  <span className="secondary">
-                    每月 {p.dayOfMonth} 日 · 下次 {p.nextRunDate} · 實領{" "}
-                    <Amount value={p.totals.netMinor} currency={p.currency} kind="income" variant="inline" />
-                  </span>
-                </div>
-                <div className="row-inline">
-                  <button type="button" className="btn ghost" onClick={() => loadProfile(p.id)}>
-                    編輯
-                  </button>
-                  <button
-                    type="button"
-                    className="btn ghost"
-                    onClick={() => setActive.mutate({ id: p.id, active: !p.active })}
-                  >
-                    {p.active ? "暫停" : "啟用"}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn ghost"
-                    onClick={() => {
-                      if (confirm(`刪除「${p.name}」？`)) remove.mutate({ id: p.id });
-                    }}
-                  >
-                    刪除
-                  </button>
-                </div>
-              </div>
-              <div className="payroll-mini-table">
-                {p.lines.map((l) => (
-                  <span key={l.id} className={l.kind === "earning" ? "income" : "expense"}>
-                    {l.name}{" "}
-                    <Amount
-                      value={l.amountMinor}
-                      currency={p.currency}
-                      kind={l.kind === "earning" ? "income" : "expense"}
-                      signed={l.kind === "deduction"}
-                      variant="inline"
-                    />
-                  </span>
-                ))}
-              </div>
-            </div>
+                </>
+              }
+            >
+              {editingId === p.id && (
+                <PayrollForm
+                  accounts={accountOptions}
+                  initial={{
+                    name: p.name,
+                    depositAccountId: p.depositAccountId,
+                    dayOfMonth: String(p.dayOfMonth),
+                    lines: p.lines.map((l) => ({
+                      name: l.name,
+                      kind: l.kind as "earning" | "deduction",
+                      amount: String(Number(l.amountMinor) / 100),
+                    })),
+                  }}
+                  submitLabel="儲存"
+                  pending={update.isPending}
+                  error={editError}
+                  onSubmit={(v) => {
+                    setEditError(null);
+                    update.mutate({ id: p.id, ...v });
+                  }}
+                  onCancel={() => setEditingId(null)}
+                />
+              )}
+            </EditableRow>
           ))}
         </div>
       )}
@@ -296,19 +346,17 @@ function PayrollLineRow({
   onRemove: () => void;
 }) {
   return (
-    <div className="row-inline" style={{ marginBottom: 8 }}>
+    <div className="payroll-line">
       <input
         placeholder="項目名稱"
         value={line.name}
         onChange={(e) => onChange({ ...line, name: e.target.value })}
-        style={{ flex: 2 }}
       />
       <input
         inputMode="decimal"
         placeholder="0"
         value={line.amount}
         onChange={(e) => onChange({ ...line, amount: e.target.value })}
-        style={{ flex: 1 }}
       />
       <button type="button" className="btn ghost" onClick={onRemove}>
         ×

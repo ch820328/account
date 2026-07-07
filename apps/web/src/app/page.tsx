@@ -1,24 +1,57 @@
 "use client";
 
 import { Amount } from "@/components/Amount";
+import { QuickEntry } from "@/components/QuickEntry";
+import { SkeletonCard, SkeletonList } from "@/components/Skeleton";
 import { TopBar } from "@/components/TopBar";
+import { TransactionList } from "@/components/TransactionList";
 import { useSession } from "@/lib/auth-client";
-import { fmtDate } from "@/lib/format";
+import { fmt } from "@/lib/format";
 import { accountSideLabel } from "@/lib/labels";
 import { trpc } from "@/lib/trpc";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+
+function ExpenseBar({
+  label,
+  value,
+  total,
+  currency,
+}: {
+  label: string;
+  value: bigint;
+  total: bigint;
+  currency: string;
+}) {
+  const pct = total > 0n ? Number((value * 100n) / total) : 0;
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div className="row-inline" style={{ justifyContent: "space-between", fontSize: 13 }}>
+        <span>{label}</span>
+        <span className="expense" style={{ fontVariantNumeric: "tabular-nums" }}>
+          {fmt(value, currency)}
+        </span>
+      </div>
+      <div className="bar-track">
+        <div className="bar-fill" style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
+}
 
 export default function HomePage() {
   const { data: session, isPending } = useSession();
   const router = useRouter();
+  const utils = trpc.useUtils();
+  const [quickOpen, setQuickOpen] = useState(false);
 
-  const monthly = trpc.transactions.monthlySummary.useQuery(undefined, {
+  const breakdown = trpc.transactions.monthlyBreakdown.useQuery(undefined, {
     enabled: !!session?.user,
   });
   const recent = trpc.transactions.list.useQuery({ limit: 10 }, { enabled: !!session?.user });
   const netWorth = trpc.netWorth.summary.useQuery(undefined, { enabled: !!session?.user });
+  const upcoming = trpc.transactions.upcoming.useQuery({ days: 30 }, { enabled: !!session?.user });
   const balances = trpc.accounts.listWithBalances.useQuery(undefined, {
     enabled: !!session?.user,
   });
@@ -44,49 +77,53 @@ export default function HomePage() {
       <div className="container">
         <div className="row-inline" style={{ justifyContent: "space-between", marginBottom: 16 }}>
           <h2 style={{ margin: 0 }}>本月記帳</h2>
-          <Link className="btn" href="/entry">
-            + 記一筆
-          </Link>
+          <button className="btn" onClick={() => setQuickOpen((v) => !v)}>
+            {quickOpen ? "收合" : "+ 記錄"}
+          </button>
         </div>
 
+        {quickOpen && (
+          <div style={{ marginBottom: 20 }}>
+            <QuickEntry onDone={() => setQuickOpen(false)} />
+          </div>
+        )}
+
         <div className="grid cols-3">
-          {monthly.isLoading ? (
-            <div className="card muted">載入中…</div>
-          ) : monthly.data && monthly.data.length > 0 ? (
-            monthly.data.map((s) => (
-              <div className="card" key={s.currency}>
-                <h3>{s.currency} · 本月</h3>
-                <Amount
-                  value={s.net}
-                  currency={s.currency}
-                  kind="auto"
-                  signed
-                  variant="stat"
-                />
-                <div className="secondary" style={{ marginTop: 8, fontSize: 13 }}>
-                  <span className="income">
-                    收 <Amount value={s.income} currency={s.currency} kind="income" variant="inline" />
-                  </span>
-                  {" · "}
-                  <span className="expense">
-                    支 <Amount value={s.expense} currency={s.currency} kind="expense" variant="inline" />
-                  </span>
-                </div>
-              </div>
-            ))
+          {netWorth.isLoading ? (
+            <SkeletonCard />
           ) : (
-            <div className="card muted">本月尚無記錄，點「記一筆」開始。</div>
+            <div className="card">
+              <h3>現金資產</h3>
+              <Amount
+                value={netWorth.data?.cashAndBankMinor ?? 0n}
+                currency={base}
+                kind="income"
+                variant="stat"
+              />
+              <div className="secondary" style={{ marginTop: 8, fontSize: 13 }}>
+                銀行＋現金＋錢包
+              </div>
+            </div>
+          )}
+
+          {breakdown.isLoading ? (
+            <SkeletonCard />
+          ) : (
+            <div className="card">
+              <h3>本月收入</h3>
+              <Amount
+                value={breakdown.data?.incomeMinor ?? 0n}
+                currency={base}
+                kind="income"
+                variant="stat"
+              />
+            </div>
           )}
 
           {netWorth.data && (
             <Link href="/net-worth" className="card card-link">
               <h3>淨資產 · {base}</h3>
-              <Amount
-                value={netWorth.data.totalMinor}
-                currency={base}
-                kind="auto"
-                variant="stat"
-              />
+              <Amount value={netWorth.data.totalMinor} currency={base} kind="auto" variant="stat" />
               <div className="secondary" style={{ marginTop: 8, fontSize: 13 }}>
                 查看資產負債明細 →
               </div>
@@ -94,9 +131,61 @@ export default function HomePage() {
           )}
         </div>
 
+        {breakdown.data && (
+          <>
+            <div className="section-title">本月支出分項</div>
+            <div className="card">
+              <div className="row-inline" style={{ justifyContent: "space-between", marginBottom: 12 }}>
+                <span className="primary">本月支出合計</span>
+                <Amount value={breakdown.data.expenseMinor} currency={base} kind="expense" signed />
+              </div>
+              <ExpenseBar
+                label="生活開銷"
+                value={breakdown.data.living}
+                total={breakdown.data.expenseMinor}
+                currency={base}
+              />
+              <ExpenseBar
+                label="分期"
+                value={breakdown.data.installment}
+                total={breakdown.data.expenseMinor}
+                currency={base}
+              />
+              <ExpenseBar
+                label="固定支出"
+                value={breakdown.data.recurring}
+                total={breakdown.data.expenseMinor}
+                currency={base}
+              />
+              {breakdown.data.payroll > 0n && (
+                <ExpenseBar
+                  label="薪資扣款"
+                  value={breakdown.data.payroll}
+                  total={breakdown.data.expenseMinor}
+                  currency={base}
+                />
+              )}
+              {breakdown.data.other > 0n && (
+                <ExpenseBar
+                  label="其他"
+                  value={breakdown.data.other}
+                  total={breakdown.data.expenseMinor}
+                  currency={base}
+                />
+              )}
+              {breakdown.data.loanTransfer > 0n && (
+                <div className="row-inline" style={{ justifyContent: "space-between", marginTop: 10, fontSize: 13 }}>
+                  <span className="muted">貸款還款（轉帳，不計入支出）</span>
+                  <Amount value={breakdown.data.loanTransfer} currency={base} kind="neutral" />
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
         <div className="section-title">帳戶快覽</div>
         {balances.isLoading ? (
-          <div className="muted">載入中…</div>
+          <SkeletonList rows={3} />
         ) : !balances.data?.length ? (
           <div className="muted">
             尚無帳戶，<Link href="/accounts">新增帳戶</Link>。
@@ -104,13 +193,17 @@ export default function HomePage() {
         ) : (
           <div className="list">
             {balances.data.slice(0, 6).map((a) => (
-              <div className="row" key={a.accountId}>
+              <Link
+                className="row card-link"
+                key={a.accountId}
+                href={`/transactions?account=${a.accountId}`}
+              >
                 <div className="meta">
                   <span className="primary">
                     {a.name}
                     <span className="badge">{accountSideLabel(a.isLiability)}</span>
                   </span>
-                  <span className="secondary">{a.currency}</span>
+                  <span className="secondary">{a.currency} · 看明細 →</span>
                 </div>
                 <Amount
                   value={a.balanceMinor}
@@ -118,74 +211,59 @@ export default function HomePage() {
                   kind={a.isLiability ? "expense" : "income"}
                   signed={a.isLiability}
                 />
-              </div>
+              </Link>
             ))}
           </div>
         )}
 
-        <div className="section-title">最近記錄</div>
-        <RecentList data={recent.data} loading={recent.isLoading} />
+        {upcoming.data && upcoming.data.length > 0 && (
+          <>
+            <div className="section-title">即將發生（30 天）</div>
+            <div className="list">
+              {upcoming.data.map((u, i) => (
+                <div className="row" key={`${u.name}-${u.date}-${i}`}>
+                  <div className="meta">
+                    <span className="primary">
+                      {u.name}
+                      {u.note && <span className="badge muted-badge">{u.note}</span>}
+                    </span>
+                    <span className="secondary">{u.date}</span>
+                  </div>
+                  {u.kind === "rsu" ? (
+                    <span className="muted">RSU 入帳</span>
+                  ) : (
+                    <Amount
+                      value={u.amountMinor}
+                      currency={u.currency}
+                      kind={u.kind === "income" ? "income" : u.kind === "expense" ? "expense" : "neutral"}
+                      signed={u.kind !== "transfer"}
+                    />
+                  )}
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        <div className="row-inline" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
+          <div className="section-title" style={{ marginBottom: 0 }}>最近記錄</div>
+          <Link href="/transactions" className="secondary" style={{ fontSize: 13 }}>
+            全部交易 →
+          </Link>
+        </div>
+        <TransactionList
+          data={recent.data?.items}
+          loading={recent.isLoading}
+          invalidate={() =>
+            Promise.all([
+              utils.transactions.list.invalidate(),
+              utils.transactions.monthlySummary.invalidate(),
+              utils.accounts.listWithBalances.invalidate(),
+              utils.netWorth.summary.invalidate(),
+            ])
+          }
+        />
       </div>
     </>
-  );
-}
-
-function RecentList({
-  data,
-  loading,
-}: {
-  data:
-    | {
-        id: string;
-        type: "income" | "expense" | "transfer";
-        amountMinor: bigint;
-        currency: string;
-        occurredAt: Date;
-        note: string | null;
-        accountName: string;
-        transferAccountName: string | null;
-        categoryName: string | null;
-      }[]
-    | undefined;
-  loading: boolean;
-}) {
-  if (loading) return <div className="muted">載入中…</div>;
-  if (!data || data.length === 0) {
-    return (
-      <div className="muted">
-        尚無記錄。<Link href="/entry">記第一筆</Link>
-      </div>
-    );
-  }
-
-  return (
-    <div className="list">
-      {data.map((t) => (
-        <div className="row" key={t.id}>
-          <div className="meta">
-            <span className="primary">
-              {t.type === "transfer"
-                ? "轉帳"
-                : (t.categoryName ?? (t.type === "income" ? "收入" : "支出"))}
-            </span>
-            <span className="secondary">
-              {t.type === "transfer"
-                ? `${t.accountName} → ${t.transferAccountName ?? "?"}`
-                : t.accountName}{" "}
-              · {fmtDate(t.occurredAt)}
-              {t.note ? ` · ${t.note}` : ""}
-            </span>
-          </div>
-          <Amount
-            value={t.amountMinor}
-            currency={t.currency}
-            kind={
-              t.type === "expense" ? "expense" : t.type === "income" ? "income" : "neutral"
-            }
-            signed={t.type !== "transfer"}
-          />
-        </div>
-      ))}
-    </div>
   );
 }

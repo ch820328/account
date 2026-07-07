@@ -13,6 +13,12 @@ export function fmt(amountMinor: bigint, currency: string): string {
   return `${negative ? "−" : ""}$${num}`;
 }
 
+/** Convert bigint minor units to a plain number in major units for charts. */
+export function toMajor(amountMinor: bigint, currency: string): number {
+  const exp = currencyExponent(currency);
+  return Number(amountMinor) / 10 ** exp;
+}
+
 export function fmtDate(d: Date | string): string {
   const date = typeof d === "string" ? new Date(d) : d;
   return new Intl.DateTimeFormat("zh-TW", {

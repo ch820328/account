@@ -1,7 +1,7 @@
 import { accounts, MARKETS, rsuGrants, rsuVests } from "@acc/db";
-import { buildRsuVestSchedule, previewRsuSchedule } from "@acc/core";
+import { previewRsuSchedule, rsuVestRows } from "@acc/core";
 import { TRPCError } from "@trpc/server";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { protectedProcedure, router } from "../trpc";
 
@@ -16,18 +16,27 @@ export const rsuRouter = router({
       .where(eq(rsuGrants.userId, ctx.user.id))
       .orderBy(rsuGrants.createdAt);
 
-    const result = [];
-    for (const grant of grants) {
-      const vests = await ctx.db
-        .select()
-        .from(rsuVests)
-        .where(eq(rsuVests.grantId, grant.id))
-        .orderBy(asc(rsuVests.periodIndex));
+    if (grants.length === 0) return [];
+
+    const allVests = await ctx.db
+      .select()
+      .from(rsuVests)
+      .where(inArray(rsuVests.grantId, grants.map((g) => g.id)))
+      .orderBy(asc(rsuVests.periodIndex));
+
+    const vestsByGrant = new Map<string, typeof allVests>();
+    for (const vest of allVests) {
+      const list = vestsByGrant.get(vest.grantId);
+      if (list) list.push(vest);
+      else vestsByGrant.set(vest.grantId, [vest]);
+    }
+
+    return grants.map((grant) => {
+      const vests = vestsByGrant.get(grant.id) ?? [];
       const vested = vests.filter((v) => v.status === "vested").length;
       const next = vests.find((v) => v.status === "pending");
-      result.push({ ...grant, vests, vestedCount: vested, nextVest: next ?? null });
-    }
-    return result;
+      return { ...grant, vests, vestedCount: vested, nextVest: next ?? null };
+    });
   }),
 
   preview: protectedProcedure
@@ -50,6 +59,7 @@ export const rsuRouter = router({
         totalQuantity: quantity,
         startDate: isoDate,
         periods: z.number().int().min(1).max(120).default(48),
+        sellToCoverPct: z.number().min(0).max(100).default(0),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -64,29 +74,105 @@ export const rsuRouter = router({
         if (!acct) throw new TRPCError({ code: "NOT_FOUND", message: "找不到證券戶" });
       }
 
-      const [grant] = await ctx.db
-        .insert(rsuGrants)
-        .values({
-          userId: ctx.user.id,
-          name: input.name,
-          symbol: input.symbol.toUpperCase(),
-          market: input.market,
-          brokerAccountId: input.brokerAccountId,
-          totalQuantity: input.totalQuantity,
-          startDate: input.startDate,
-          periods: input.periods,
-        })
-        .returning();
+      return ctx.db.transaction(async (tx) => {
+        const [grant] = await tx
+          .insert(rsuGrants)
+          .values({
+            userId: ctx.user.id,
+            name: input.name,
+            symbol: input.symbol.toUpperCase(),
+            market: input.market,
+            brokerAccountId: input.brokerAccountId,
+            totalQuantity: input.totalQuantity,
+            startDate: input.startDate,
+            periods: input.periods,
+            sellToCoverPct: String(input.sellToCoverPct),
+          })
+          .returning();
 
-      await buildRsuVestSchedule(
-        ctx.db,
-        grant!.id,
-        input.totalQuantity,
-        input.startDate,
-        input.periods,
-      );
+        await tx
+          .insert(rsuVests)
+          .values(rsuVestRows(grant!.id, input.totalQuantity, input.startDate, input.periods));
 
-      return grant;
+        return grant;
+      });
+    }),
+
+  update: protectedProcedure
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        name: z.string().min(1).max(80).optional(),
+        symbol: z.string().min(1).max(20).optional(),
+        market: z.enum(MARKETS).optional(),
+        brokerAccountId: z.string().uuid().nullable().optional(),
+        totalQuantity: quantity.optional(),
+        startDate: isoDate.optional(),
+        periods: z.number().int().min(1).max(120).optional(),
+        sellToCoverPct: z.number().min(0).max(100).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const [existing] = await ctx.db
+        .select()
+        .from(rsuGrants)
+        .where(and(eq(rsuGrants.id, input.id), eq(rsuGrants.userId, ctx.user.id)))
+        .limit(1);
+      if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "找不到 RSU" });
+
+      const vests = await ctx.db
+        .select()
+        .from(rsuVests)
+        .where(eq(rsuVests.grantId, existing.id));
+      const anyVested = vests.some((v) => v.status === "vested");
+
+      const scheduleChanged =
+        (input.totalQuantity != null && input.totalQuantity !== existing.totalQuantity) ||
+        (input.startDate != null && input.startDate !== existing.startDate) ||
+        (input.periods != null && input.periods !== existing.periods);
+
+      if (scheduleChanged && anyVested) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "已有已入帳的期數，無法修改股數／期數／開始月份，請新增新的授予",
+        });
+      }
+
+      const totalQuantity = input.totalQuantity ?? existing.totalQuantity;
+      const startDate = input.startDate ?? existing.startDate;
+      const periods = input.periods ?? existing.periods;
+
+      return ctx.db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(rsuGrants)
+          .set({
+            name: input.name ?? existing.name,
+            symbol: (input.symbol ?? existing.symbol).toUpperCase(),
+            market: input.market ?? existing.market,
+            brokerAccountId:
+              input.brokerAccountId !== undefined
+                ? input.brokerAccountId
+                : existing.brokerAccountId,
+            totalQuantity,
+            startDate,
+            periods,
+            sellToCoverPct:
+              input.sellToCoverPct !== undefined
+                ? String(input.sellToCoverPct)
+                : existing.sellToCoverPct,
+          })
+          .where(eq(rsuGrants.id, existing.id))
+          .returning();
+
+        if (scheduleChanged) {
+          await tx.delete(rsuVests).where(eq(rsuVests.grantId, existing.id));
+          await tx
+            .insert(rsuVests)
+            .values(rsuVestRows(existing.id, totalQuantity, startDate, periods));
+        }
+
+        return updated;
+      });
     }),
 
   setActive: protectedProcedure

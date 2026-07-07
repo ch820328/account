@@ -25,6 +25,10 @@ export default function CategoriesPage() {
     onError: (e) => setError(e.message),
   });
 
+  const seedDefaults = trpc.categories.seedDefaults.useMutation({
+    onSuccess: () => utils.categories.list.invalidate(),
+  });
+
   useEffect(() => {
     if (!isPending && !session?.user) router.replace("/login");
   }, [isPending, session, router]);
@@ -45,9 +49,19 @@ export default function CategoriesPage() {
     <>
       <TopBar />
       <div className="container">
-        <h2 style={{ marginTop: 0 }}>分類管理</h2>
+        <div className="row-inline" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
+          <h2 style={{ marginTop: 0 }}>分類管理</h2>
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => seedDefaults.mutate()}
+            disabled={seedDefaults.isPending}
+          >
+            {seedDefaults.isPending ? "補上中…" : "補上預設分類"}
+          </button>
+        </div>
         <p className="muted" style={{ margin: "0 0 20px" }}>
-          記帳時使用的收入／支出分類，可自行新增。
+          記帳時使用的收入／支出分類，依群組（如飲食、交通）組織，方便分區選取。可自行新增或改名。
         </p>
 
         <form
@@ -101,33 +115,101 @@ export default function CategoriesPage() {
 }
 
 function CategoryList({ items }: { items: { id: string; name: string; parentId: string | null }[] }) {
+  const utils = trpc.useUtils();
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+
+  const update = trpc.categories.update.useMutation({
+    onSuccess: async () => {
+      await utils.categories.list.invalidate();
+      setEditingId(null);
+    },
+  });
+  const remove = trpc.categories.delete.useMutation({
+    onSuccess: () => utils.categories.list.invalidate(),
+  });
+
   if (items.length === 0) return <div className="muted">尚無分類</div>;
+
+  const row = (c: { id: string; name: string }, indent = false) => {
+    const editing = editingId === c.id;
+    return (
+      <div className="row" key={c.id} style={indent ? { paddingLeft: 28 } : undefined}>
+        {editing ? (
+          <input
+            autoFocus
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && draft.trim()) update.mutate({ id: c.id, name: draft.trim() });
+              if (e.key === "Escape") setEditingId(null);
+            }}
+            style={{ flex: 1 }}
+          />
+        ) : (
+          <span className={indent ? "secondary" : "primary"}>
+            {indent ? "— " : ""}
+            {c.name}
+          </span>
+        )}
+        <div className="row-inline">
+          {editing ? (
+            <>
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => draft.trim() && update.mutate({ id: c.id, name: draft.trim() })}
+                disabled={update.isPending}
+              >
+                儲存
+              </button>
+              <button type="button" className="btn ghost" onClick={() => setEditingId(null)}>
+                取消
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => {
+                  setEditingId(c.id);
+                  setDraft(c.name);
+                }}
+              >
+                改名
+              </button>
+              <button
+                type="button"
+                className="btn ghost"
+                onClick={() => {
+                  if (confirm(`刪除分類「${c.name}」？既有紀錄會變成未分類。`)) {
+                    remove.mutate({ id: c.id });
+                  }
+                }}
+              >
+                刪除
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   const parents = items.filter((c) => !c.parentId);
   const children = items.filter((c) => c.parentId);
+  const orphans = children.filter((c) => !parents.some((p) => p.id === c.parentId));
 
   return (
     <div className="list">
       {parents.map((p) => (
         <div key={p.id}>
-          <div className="row">
-            <span className="primary">{p.name}</span>
-          </div>
-          {children
-            .filter((c) => c.parentId === p.id)
-            .map((c) => (
-              <div className="row" key={c.id} style={{ paddingLeft: 28 }}>
-                <span className="secondary">— {c.name}</span>
-              </div>
-            ))}
+          {row(p)}
+          {children.filter((c) => c.parentId === p.id).map((c) => row(c, true))}
         </div>
       ))}
-      {children
-        .filter((c) => !parents.some((p) => p.id === c.parentId))
-        .map((c) => (
-          <div className="row" key={c.id}>
-            <span className="primary">{c.name}</span>
-          </div>
-        ))}
+      {orphans.map((c) => row(c))}
     </div>
   );
 }

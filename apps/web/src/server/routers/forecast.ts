@@ -21,6 +21,7 @@ export const forecastRouter = router({
       z.object({
         defaultLivingExpense: decimal.optional(),
         horizonMonths: z.number().int().min(3).max(60).optional(),
+        livingExpenseCategoryIds: z.array(z.string().uuid()).optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -33,6 +34,11 @@ export const forecastRouter = router({
         ).amount;
       }
       if (input.horizonMonths != null) patch.horizonMonths = input.horizonMonths;
+      if (input.livingExpenseCategoryIds != null) {
+        patch.livingExpenseCategoryIds = input.livingExpenseCategoryIds.length
+          ? input.livingExpenseCategoryIds.join(",")
+          : null;
+      }
       await updateForecastSettings(ctx.db, ctx.user.id, patch);
       return computeAssetForecast(ctx.db, ctx.user.id);
     }),

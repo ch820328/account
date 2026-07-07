@@ -11,8 +11,9 @@ const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
 const recurringInput = z.object({
   name: z.string().min(1).max(80),
-  kind: z.enum(["income", "expense"]),
+  kind: z.enum(["income", "expense", "transfer"]),
   accountId: z.string().uuid(),
+  transferAccountId: z.string().uuid().optional(),
   categoryId: z.string().uuid().optional(),
   amount: decimal,
   currency: z.string().length(3).optional(),
@@ -33,6 +34,7 @@ export const recurringRouter = router({
         name: recurringRules.name,
         kind: recurringRules.kind,
         accountId: recurringRules.accountId,
+        transferAccountId: recurringRules.transferAccountId,
         categoryId: recurringRules.categoryId,
         amountMinor: recurringRules.amountMinor,
         currency: recurringRules.currency,
@@ -60,6 +62,18 @@ export const recurringRouter = router({
       .limit(1);
     if (!acct) throw new TRPCError({ code: "NOT_FOUND", message: "找不到帳戶" });
 
+    if (input.kind === "transfer") {
+      if (!input.transferAccountId || input.transferAccountId === input.accountId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "轉帳需選擇不同的轉入帳戶" });
+      }
+      const [dest] = await ctx.db
+        .select()
+        .from(accounts)
+        .where(and(eq(accounts.id, input.transferAccountId), eq(accounts.userId, ctx.user.id)))
+        .limit(1);
+      if (!dest) throw new TRPCError({ code: "NOT_FOUND", message: "找不到轉入帳戶" });
+    }
+
     const currency = (input.currency ?? acct.currency).toUpperCase();
     const { amount } = fromDecimal(input.amount, currency);
     const schedule = {
@@ -77,7 +91,8 @@ export const recurringRouter = router({
         name: input.name,
         kind: input.kind,
         accountId: input.accountId,
-        categoryId: input.categoryId,
+        transferAccountId: input.kind === "transfer" ? input.transferAccountId : null,
+        categoryId: input.kind === "transfer" ? null : input.categoryId,
         amountMinor: amount,
         currency,
         frequency: input.frequency,

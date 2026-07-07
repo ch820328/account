@@ -7,7 +7,7 @@ import {
 import { firstPayrollRunDate, sumPayrollLines } from "@acc/core";
 import { fromDecimal } from "@acc/money";
 import { TRPCError } from "@trpc/server";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { protectedProcedure, router } from "../trpc";
 
@@ -27,17 +27,25 @@ export const payrollRouter = router({
       .where(eq(payrollProfiles.userId, ctx.user.id))
       .orderBy(payrollProfiles.createdAt);
 
-    const result = [];
-    for (const profile of profiles) {
-      const lines = await ctx.db
-        .select()
-        .from(payrollLines)
-        .where(eq(payrollLines.profileId, profile.id))
-        .orderBy(asc(payrollLines.sortOrder));
-      const totals = sumPayrollLines(lines);
-      result.push({ ...profile, lines, totals });
+    if (profiles.length === 0) return [];
+
+    const allLines = await ctx.db
+      .select()
+      .from(payrollLines)
+      .where(inArray(payrollLines.profileId, profiles.map((p) => p.id)))
+      .orderBy(asc(payrollLines.sortOrder));
+
+    const linesByProfile = new Map<string, typeof allLines>();
+    for (const line of allLines) {
+      const list = linesByProfile.get(line.profileId);
+      if (list) list.push(line);
+      else linesByProfile.set(line.profileId, [line]);
     }
-    return result;
+
+    return profiles.map((profile) => {
+      const lines = linesByProfile.get(profile.id) ?? [];
+      return { ...profile, lines, totals: sumPayrollLines(lines) };
+    });
   }),
 
   create: protectedProcedure
@@ -63,30 +71,32 @@ export const payrollRouter = router({
       const currency = (input.currency ?? acct.currency).toUpperCase();
       const nextRunDate = firstPayrollRunDate(input.dayOfMonth);
 
-      const [profile] = await ctx.db
-        .insert(payrollProfiles)
-        .values({
-          userId: ctx.user.id,
-          name: input.name,
-          depositAccountId: input.depositAccountId,
-          currency,
-          dayOfMonth: input.dayOfMonth,
-          nextRunDate,
-        })
-        .returning();
+      return ctx.db.transaction(async (tx) => {
+        const [profile] = await tx
+          .insert(payrollProfiles)
+          .values({
+            userId: ctx.user.id,
+            name: input.name,
+            depositAccountId: input.depositAccountId,
+            currency,
+            dayOfMonth: input.dayOfMonth,
+            nextRunDate,
+          })
+          .returning();
 
-      await ctx.db.insert(payrollLines).values(
-        input.lines.map((line, i) => ({
-          profileId: profile!.id,
-          name: line.name,
-          kind: line.kind,
-          amountMinor: fromDecimal(line.amount, currency).amount,
-          sortOrder: i,
-          categoryId: line.categoryId,
-        })),
-      );
+        await tx.insert(payrollLines).values(
+          input.lines.map((line, i) => ({
+            profileId: profile!.id,
+            name: line.name,
+            kind: line.kind,
+            amountMinor: fromDecimal(line.amount, currency).amount,
+            sortOrder: i,
+            categoryId: line.categoryId,
+          })),
+        );
 
-      return profile;
+        return profile;
+      });
     }),
 
   update: protectedProcedure
@@ -111,32 +121,34 @@ export const payrollRouter = router({
       const nextRunDate =
         input.dayOfMonth != null ? firstPayrollRunDate(dayOfMonth) : existing.nextRunDate;
 
-      const [updated] = await ctx.db
-        .update(payrollProfiles)
-        .set({
-          name: input.name ?? existing.name,
-          depositAccountId: input.depositAccountId ?? existing.depositAccountId,
-          dayOfMonth,
-          nextRunDate,
-        })
-        .where(eq(payrollProfiles.id, input.id))
-        .returning();
+      return ctx.db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(payrollProfiles)
+          .set({
+            name: input.name ?? existing.name,
+            depositAccountId: input.depositAccountId ?? existing.depositAccountId,
+            dayOfMonth,
+            nextRunDate,
+          })
+          .where(eq(payrollProfiles.id, input.id))
+          .returning();
 
-      if (input.lines) {
-        await ctx.db.delete(payrollLines).where(eq(payrollLines.profileId, input.id));
-        await ctx.db.insert(payrollLines).values(
-          input.lines.map((line, i) => ({
-            profileId: input.id,
-            name: line.name,
-            kind: line.kind,
-            amountMinor: fromDecimal(line.amount, existing.currency).amount,
-            sortOrder: i,
-            categoryId: line.categoryId,
-          })),
-        );
-      }
+        if (input.lines) {
+          await tx.delete(payrollLines).where(eq(payrollLines.profileId, input.id));
+          await tx.insert(payrollLines).values(
+            input.lines.map((line, i) => ({
+              profileId: input.id,
+              name: line.name,
+              kind: line.kind,
+              amountMinor: fromDecimal(line.amount, existing.currency).amount,
+              sortOrder: i,
+              categoryId: line.categoryId,
+            })),
+          );
+        }
 
-      return updated;
+        return updated;
+      });
     }),
 
   setActive: protectedProcedure

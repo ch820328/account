@@ -45,3 +45,44 @@ export const FREQUENCY_LABELS: Record<string, string> = {
 export function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
+
+/** Human label for a transaction's origin. `null` for plain manual entries. */
+export const TRANSACTION_SOURCE_LABELS: Record<string, string | null> = {
+  manual: null,
+  recurring: "定期",
+  payroll: "薪資",
+  installment: "分期",
+  loan: "貸款",
+  rsu: "RSU",
+};
+
+export function transactionSourceLabel(source: string | null | undefined): string | null {
+  if (!source) return null;
+  return TRANSACTION_SOURCE_LABELS[source] ?? null;
+}
+
+/** Auto-generated transactions come from a schedule, not manual bookkeeping. */
+export function isAutoTransaction(source: string | null | undefined): boolean {
+  return !!source && source !== "manual";
+}
+
+export type LoanLedgerKind = "lend" | "collect" | "borrow" | "repay";
+
+export const LOAN_LEDGER_KIND_OPTIONS: { value: LoanLedgerKind; label: string }[] = [
+  { value: "lend", label: "我借出（對方欠我）" },
+  { value: "collect", label: "對方還我" },
+  { value: "borrow", label: "我跟對方借（我欠對方）" },
+  { value: "repay", label: "我還對方" },
+];
+
+export const LOAN_LEDGER_KIND_LABELS: Record<LoanLedgerKind, string> = {
+  lend: "借出",
+  collect: "收款",
+  borrow: "借入",
+  repay: "還款",
+};
+
+/** lend/repay increase what they owe me; collect/borrow decrease it. */
+export function isPositiveLedgerKind(kind: LoanLedgerKind): boolean {
+  return kind === "lend" || kind === "repay";
+}

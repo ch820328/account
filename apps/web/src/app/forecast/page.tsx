@@ -1,8 +1,10 @@
 "use client";
 
 import { Amount } from "@/components/Amount";
+import { LineChart } from "@/components/Charts";
 import { TopBar } from "@/components/TopBar";
 import { useSession } from "@/lib/auth-client";
+import { toMajor } from "@/lib/format";
 import { trpc } from "@/lib/trpc";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -15,9 +17,13 @@ export default function ForecastPage() {
   const projection = trpc.forecast.projection.useQuery(undefined, {
     enabled: !!session?.user,
   });
+  const categories = trpc.categories.list.useQuery(undefined, {
+    enabled: !!session?.user,
+  });
 
   const [defaultLiving, setDefaultLiving] = useState("");
   const [horizon, setHorizon] = useState("12");
+  const [livingCats, setLivingCats] = useState<string[] | null>(null);
   const [editMonth, setEditMonth] = useState<string | null>(null);
   const [editAmount, setEditAmount] = useState("");
 
@@ -45,6 +51,12 @@ export default function ForecastPage() {
       setHorizon(String(projection.data.horizonMonths));
     }
   }, [projection.data, defaultLiving]);
+
+  useEffect(() => {
+    if (projection.data && livingCats === null) {
+      setLivingCats(projection.data.livingExpenseCategoryIds);
+    }
+  }, [projection.data, livingCats]);
 
   if (isPending || !session?.user) {
     return (
@@ -74,6 +86,7 @@ export default function ForecastPage() {
             updateSettings.mutate({
               defaultLivingExpense: defaultLiving || "0",
               horizonMonths: Number(horizon) || 12,
+              livingExpenseCategoryIds: livingCats ?? [],
             });
           }}
         >
@@ -104,6 +117,43 @@ export default function ForecastPage() {
               </button>
             </label>
           </div>
+
+          <div>
+            <span className="secondary" style={{ fontSize: 13 }}>
+              生活費計入的分類（「寫入實際」時用）— 不選＝所有手動支出都算
+            </span>
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 8,
+                marginTop: 8,
+              }}
+            >
+              {(categories.data ?? [])
+                .filter((c) => c.kind === "expense")
+                .map((c) => {
+                  const selected = (livingCats ?? []).includes(c.id);
+                  return (
+                    <button
+                      type="button"
+                      key={c.id}
+                      className={`chip${selected ? " chip-on" : ""}`}
+                      onClick={() =>
+                        setLivingCats((prev) => {
+                          const cur = prev ?? [];
+                          return cur.includes(c.id)
+                            ? cur.filter((x) => x !== c.id)
+                            : [...cur, c.id];
+                        })
+                      }
+                    >
+                      {c.name}
+                    </button>
+                  );
+                })}
+            </div>
+          </div>
         </form>
 
         {projection.isLoading ? (
@@ -124,6 +174,18 @@ export default function ForecastPage() {
                   variant="stat"
                 />
               </div>
+            </div>
+
+            <div className="card" style={{ marginTop: 16 }}>
+              <h3>預估淨資產走勢</h3>
+              <LineChart
+                points={data.months.map((m) => ({
+                  label: m.month.slice(5),
+                  value: toMajor(m.projectedNetWorthMinor, base),
+                }))}
+                currency={base}
+                color="var(--accent)"
+              />
             </div>
 
             <div className="section-title">逐月預估</div>
@@ -191,12 +253,19 @@ export default function ForecastPage() {
                     signed
                     variant="inline"
                   />
-                  <Amount
-                    value={row.projectedNetWorthMinor}
-                    currency={base}
-                    kind="auto"
-                    variant="inline"
-                  />
+                  <span style={{ minWidth: 0 }}>
+                    <Amount
+                      value={row.projectedNetWorthMinor}
+                      currency={base}
+                      kind="auto"
+                      variant="inline"
+                    />
+                    {row.rsuVestValueMinor > 0n && (
+                      <span className="badge income" style={{ marginLeft: 6 }} title="本月 RSU 入帳市值">
+                        RSU +<Amount value={row.rsuVestValueMinor} currency={base} kind="income" variant="inline" />
+                      </span>
+                    )}
+                  </span>
                   <span className="row-inline" style={{ gap: 4 }}>
                     {editMonth === row.month ? (
                       <button

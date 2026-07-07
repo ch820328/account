@@ -1,10 +1,12 @@
-import { ACCOUNT_TYPES, accounts } from "@acc/db";
+import { ACCOUNT_TYPES, accounts, auditLog } from "@acc/db";
 import { getAccountBalances } from "@acc/core";
 import { fromDecimal } from "@acc/money";
 import { TRPCError } from "@trpc/server";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { protectedProcedure, router } from "../trpc";
+
+const signedDecimal = z.string().regex(/^-?\d+(\.\d+)?$/, "金額格式不正確");
 
 const decimal = z.string().regex(/^\d+(\.\d+)?$/, "金額格式不正確");
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional();
@@ -132,6 +134,33 @@ export const accountsRouter = router({
       return updated;
     }),
 
+  /** Reconcile: set an account's *current* balance directly (adjusts opening). */
+  setBalance: protectedProcedure
+    .input(z.object({ id: z.string().uuid(), balance: signedDecimal }))
+    .mutation(async ({ ctx, input }) => {
+      const [existing] = await ctx.db
+        .select()
+        .from(accounts)
+        .where(and(eq(accounts.id, input.id), eq(accounts.userId, ctx.user.id)))
+        .limit(1);
+      if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "找不到帳戶" });
+
+      const balances = await getAccountBalances(ctx.db, ctx.user.id);
+      const current = balances.find((b) => b.accountId === input.id);
+      const currentMinor = current?.balanceMinor ?? existing.openingBalanceMinor;
+      const targetMinor = fromDecimal(input.balance, existing.currency).amount;
+
+      // Shift the opening balance by the delta so the ledger stays consistent.
+      const newOpening = existing.openingBalanceMinor + (targetMinor - currentMinor);
+
+      const [updated] = await ctx.db
+        .update(accounts)
+        .set({ openingBalanceMinor: newOpening })
+        .where(eq(accounts.id, input.id))
+        .returning();
+      return updated;
+    }),
+
   archive: protectedProcedure
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
@@ -141,6 +170,13 @@ export const accountsRouter = router({
         .where(and(eq(accounts.id, input.id), eq(accounts.userId, ctx.user.id)))
         .returning();
       if (!updated) throw new TRPCError({ code: "NOT_FOUND", message: "找不到帳戶" });
+
+      await ctx.db.insert(auditLog).values({
+        userId: ctx.user.id,
+        action: "archive",
+        entity: "account",
+        summary: updated.name,
+      });
       return updated;
     }),
 });

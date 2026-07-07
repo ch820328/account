@@ -1,8 +1,11 @@
 "use client";
 
 import { Amount } from "@/components/Amount";
+import { DonutChart, LineChart } from "@/components/Charts";
+import { SkeletonCard } from "@/components/Skeleton";
 import { TopBar } from "@/components/TopBar";
 import { useSession } from "@/lib/auth-client";
+import { toMajor } from "@/lib/format";
 import { accountSideLabel } from "@/lib/labels";
 import { trpc } from "@/lib/trpc";
 import { useRouter } from "next/navigation";
@@ -14,6 +17,10 @@ export default function NetWorthPage() {
   const summary = trpc.netWorth.summary.useQuery(undefined, {
     enabled: !!session?.user,
   });
+  const history = trpc.netWorth.history.useQuery(
+    { days: 365 },
+    { enabled: !!session?.user },
+  );
 
   useEffect(() => {
     if (!isPending && !session?.user) router.replace("/login");
@@ -41,7 +48,11 @@ export default function NetWorthPage() {
         </p>
 
         {summary.isLoading ? (
-          <div className="muted">載入中…</div>
+          <div className="grid cols-3">
+            <SkeletonCard />
+            <SkeletonCard />
+            <SkeletonCard />
+          </div>
         ) : data ? (
           <>
             <div className="card hero">
@@ -54,6 +65,56 @@ export default function NetWorthPage() {
                 <span className="expense">
                   負債 <Amount value={data.liabilitiesMinor} currency={base} kind="expense" variant="inline" />
                 </span>
+              </div>
+            </div>
+
+            <div className="grid cols-2" style={{ marginTop: 16 }}>
+              <div className="card">
+                <h3>淨資產趨勢</h3>
+                {history.data && history.data.length >= 2 ? (
+                  <LineChart
+                    points={history.data.map((h) => ({
+                      label: h.asOf.slice(5),
+                      value: toMajor(h.totalMinor, base),
+                    }))}
+                    currency={base}
+                    color="var(--income)"
+                  />
+                ) : (
+                  <div className="muted" style={{ fontSize: 13 }}>
+                    每日會自動記錄一次快照，累積後即可看到趨勢曲線。
+                  </div>
+                )}
+              </div>
+              <div className="card">
+                <h3>資產配置</h3>
+                <DonutChart
+                  segments={[
+                    {
+                      label: "現金／銀行",
+                      value: toMajor(data.cashAndBankMinor, base),
+                      color: "var(--accent)",
+                    },
+                    {
+                      label: "投資",
+                      value: toMajor(data.investmentsMinor, base),
+                      color: "var(--income)",
+                    },
+                    {
+                      label: "其他資產",
+                      value: Math.max(
+                        0,
+                        toMajor(data.assetsMinor - data.cashAndBankMinor - data.investmentsMinor, base),
+                      ),
+                      color: "#b18cff",
+                    },
+                    {
+                      label: "負債",
+                      value: toMajor(data.liabilitiesMinor, base),
+                      color: "var(--expense)",
+                    },
+                  ]}
+                />
               </div>
             </div>
 
