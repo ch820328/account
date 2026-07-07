@@ -1,0 +1,1 @@
+ALTER TABLE "rsu_grants" ADD COLUMN "sell_to_cover_pct" numeric DEFAULT 0 NOT NULL;
