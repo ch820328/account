@@ -178,11 +178,25 @@ await accounting.upsertFx.mutate({
 
 兩邊都是 TypeScript 時,tRPC 可**共用 Zod schema + 型別**,改欄位兩邊編譯器一起報錯,開發最快。若量化端日後改用 Python,再為 sync 加一層 gRPC gateway 即可;記帳端的 ingest 邏輯不變。
 
-## 開發階段
+## 功能
 
-- [x] **1. 地基**:monorepo、Drizzle schema、better-auth、tRPC、手動記帳 + 列表、容器化
-- [ ] 2. 金額與多幣別:基準幣換算 + `fx_rates` 快照
-- [ ] 3. 定期扣款:`recurring_rules` + cron 產生器
-- [ ] 4. 持股與資產:`holdings` + `price_snapshots` + 每日更新
-- [ ] 5. Web 報表與圖表
-- [ ] 6. App(Expo):Dashboard + 快速記帳
+- [x] **地基**:monorepo、Drizzle schema、better-auth、tRPC、手動記帳、容器化
+- [x] **金額與多幣別**:基準幣換算 + `fx_rates` 快照(worker 每日自動更新)
+- [x] **排程**:薪資單、RSU、貸款還款、消費分期、一般定期收支(cron 產生 + 列內展開編輯)
+- [x] **交易管理**:記帳可編輯／刪除,並標記自動產生來源(薪資／分期／貸款…)
+- [x] **持股與資產**:`holdings` + `price_snapshots`,worker 每日更新股價(TWSE / stooq)
+- [x] **資產預估**:含分期結束、貸款還清、RSU 逐月 vest 市值
+- [x] **報表與圖表**:淨資產趨勢(每日快照)、資產配置、預估走勢
+- [x] **備份**:worker 每晚 `pg_dump` → Cloudflare R2(設定 `R2_*` 後啟用)
+- [x] **帳號安全**:設定頁可自行更換密碼
+- [ ] App(Expo):Dashboard + 快速記帳
+
+## 背景排程(worker)
+
+| 工作 | 時間 | 說明 |
+| --- | --- | --- |
+| `recurring-generate` | 每日 00:10 | 產生到期的定期／薪資／RSU／分期／貸款交易 |
+| `net-worth-snapshot` | 每日 00:30 | 記錄每人淨資產快照(趨勢圖來源) |
+| `fx-refresh` | 每日 06:00 | 從 open.er-api.com 更新匯率 |
+| `price-refresh` | 平日 18:00 | 更新持股股價(TW: TWSE、US: stooq) |
+| `db-backup` | `BACKUP_CRON`(預設 03:00) | `pg_dump` → R2(未設定 R2 則略過) |

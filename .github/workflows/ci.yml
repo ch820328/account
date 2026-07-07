@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: accounting
+          POSTGRES_PASSWORD: accounting
+          POSTGRES_DB: accounting
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U accounting"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://accounting:accounting@localhost:5432/accounting
+      BETTER_AUTH_SECRET: ci-secret-not-for-production
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      RUN_DB_TESTS: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Applying migrations on a fresh DB is itself a schema smoke test.
+      - name: Migrate database
+        run: pnpm --filter @acc/db migrate
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test (unit + DB integration)
+        run: pnpm test
+
+      - name: Build web
+        run: pnpm --filter @acc/web build

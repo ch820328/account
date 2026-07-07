@@ -14,6 +14,9 @@ coverage/
 # turbo
 .turbo/
 
+# typescript build info
+*.tsbuildinfo
+
 # logs
 *.log
 npm-debug.log*
