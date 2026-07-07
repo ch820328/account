@@ -5,34 +5,39 @@ import {
   generateDuePayrolls,
   generateDueRecurringTransactions,
   processDueRsuVests,
+  recordJobRun,
+  refreshFxRates,
+  refreshPrices,
+  snapshotAllUsersNetWorth,
 } from "@acc/core";
 import { db } from "@acc/db";
 import cron from "node-cron";
+import { backupDatabaseToR2 } from "./backup";
 
 /**
  * Background worker. Runs scheduled jobs that don't belong in request handlers:
- *  - refresh FX rates (phase 2)
- *  - generate due recurring transactions (phase 3)
- *  - refresh stock/ETF prices (phase 4)
- *  - nightly database backup to Cloudflare R2 (production)
- *
- * Job bodies are stubs for phase 1 — the schedule + wiring is in place so later
- * phases only need to fill in the implementation in ./jobs/*.
+ *  - refresh FX rates (open.er-api.com)
+ *  - generate due recurring / payroll / RSU / installment / loan transactions
+ *  - refresh stock/ETF prices (TWSE + stooq)
+ *  - daily net-worth snapshot for trend charts
+ *  - nightly database backup to Cloudflare R2 (if configured)
  */
 
 const TZ = process.env.TZ ?? "Asia/Taipei";
 
-function schedule(name: string, expr: string, fn: () => Promise<void>) {
+function schedule(name: string, expr: string, fn: () => Promise<string | void>) {
   cron.schedule(
     expr,
     async () => {
       const started = Date.now();
       console.log(`[worker] ${name} starting…`);
       try {
-        await fn();
+        const message = await fn();
         console.log(`[worker] ${name} done in ${Date.now() - started}ms`);
+        await recordJobRun(db, name, "success", message || undefined).catch(() => {});
       } catch (err) {
         console.error(`[worker] ${name} failed:`, err);
+        await recordJobRun(db, name, "error", (err as Error).message).catch(() => {});
       }
     },
     { timezone: TZ },
@@ -42,8 +47,8 @@ function schedule(name: string, expr: string, fn: () => Promise<void>) {
 
 // Refresh FX rates every day at 06:00.
 schedule("fx-refresh", "0 6 * * *", async () => {
-  // TODO(phase 2): fetch from frankfurter.app with exchangerate.host failover,
-  // upsert into fx_rates snapshots.
+  const { written } = await refreshFxRates(db);
+  return `${written} 筆匯率更新`;
 });
 
 // Generate due recurring transactions every day at 00:10.
@@ -53,22 +58,25 @@ schedule("recurring-generate", "10 0 * * *", async () => {
   const rsu = await processDueRsuVests(db);
   const installments = await generateDueInstallments(db);
   const loans = await generateDueLoanPayments(db);
-  console.log(
-    `[worker] scheduled: recurring=${recurring.created}, payroll=${payroll.created}, rsu=${rsu.vested}, installments=${installments.created}, loans=${loans.created}`,
-  );
+  return `定期=${recurring.created}, 薪資=${payroll.created}, RSU=${rsu.vested}, 分期=${installments.created}, 貸款=${loans.created}`;
 });
 
 // Refresh instrument prices every weekday at 18:00 (after TW/US market data).
 schedule("price-refresh", "0 18 * * 1-5", async () => {
-  // TODO(phase 4): TWSE OpenAPI for TW, Yahoo/Finnhub for US, upsert price_snapshots.
+  const { updated, failed } = await refreshPrices(db);
+  return `${updated} 檔更新, ${failed} 檔失敗`;
+});
+
+// Daily net-worth snapshot for trend charts at 00:30 (after generators).
+schedule("net-worth-snapshot", "30 0 * * *", async () => {
+  const { users } = await snapshotAllUsersNetWorth(db);
+  return `${users} 位使用者`;
 });
 
 // Nightly database backup to Cloudflare R2.
 schedule("db-backup", process.env.BACKUP_CRON ?? "0 3 * * *", async () => {
-  // TODO(prod): pg_dump | gzip -> upload to R2 (S3-compatible). Skips if R2_* unset.
-  if (!process.env.R2_BUCKET) {
-    console.log("[worker] db-backup skipped (R2 not configured)");
-  }
+  const key = await backupDatabaseToR2();
+  return key ? `已上傳 ${key}` : "略過（未設定 R2）";
 });
 
 console.log("[worker] started. Waiting for scheduled jobs…");

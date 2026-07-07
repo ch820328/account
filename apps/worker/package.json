@@ -13,6 +13,7 @@
     "@acc/core": "workspace:*",
     "@acc/db": "workspace:*",
     "@acc/money": "workspace:*",
+    "@aws-sdk/client-s3": "^3.1079.0",
     "dotenv": "^16.4.7",
     "node-cron": "^3.0.3"
   },
