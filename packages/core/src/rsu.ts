@@ -12,6 +12,32 @@ import { todayIsoDate } from "./sync";
 
 export { splitQuantityCeiling, addMonthsIso };
 
+/** Shares remaining after selling `sellToCoverPct`% to cover withholding tax. */
+export function netVestQuantity(quantity: string, sellToCoverPct: string | number): string {
+  const pct = Number(sellToCoverPct) || 0;
+  const clamped = Math.min(100, Math.max(0, pct));
+  const net = Number(quantity) * (1 - clamped / 100);
+  // Keep up to 4 decimals (fractional RSUs are common), trim trailing zeros.
+  return String(Number(net.toFixed(4)));
+}
+
+/** Pure builder for the vest rows of a grant (no DB access). */
+export function rsuVestRows(
+  grantId: string,
+  totalQuantity: string,
+  startDate: string,
+  periods: number,
+) {
+  const quantities = splitQuantityCeiling(totalQuantity, periods);
+  return quantities.map((quantity, i) => ({
+    grantId,
+    periodIndex: i + 1,
+    vestDate: addMonthsIso(startDate, i),
+    quantity,
+    status: "pending" as const,
+  }));
+}
+
 export async function buildRsuVestSchedule(
   db: Database,
   grantId: string,
@@ -19,15 +45,7 @@ export async function buildRsuVestSchedule(
   startDate: string,
   periods: number,
 ): Promise<void> {
-  const quantities = splitQuantityCeiling(totalQuantity, periods);
-  const rows = quantities.map((quantity, i) => ({
-    grantId,
-    periodIndex: i + 1,
-    vestDate: addMonthsIso(startDate, i),
-    quantity,
-    status: "pending" as const,
-  }));
-  await db.insert(rsuVests).values(rows);
+  await db.insert(rsuVests).values(rsuVestRows(grantId, totalQuantity, startDate, periods));
 }
 
 async function findOrCreateInstrument(
@@ -89,39 +107,42 @@ export async function processDueRsuVests(
   for (const { vest, grant } of due) {
     const instrumentId = await findOrCreateInstrument(db, grant.symbol, grant.market);
 
-    if (grant.brokerAccountId) {
-      const [existing] = await db
-        .select({ id: holdings.id, quantity: holdings.quantity })
-        .from(holdings)
-        .where(
-          and(
-            eq(holdings.userId, grant.userId),
-            eq(holdings.instrumentId, instrumentId),
-            eq(holdings.accountId, grant.brokerAccountId),
-          ),
-        )
-        .limit(1);
+    // Sell-to-cover: only the shares left after tax withholding are deposited.
+    const netQuantity = netVestQuantity(vest.quantity, grant.sellToCoverPct);
 
-      if (existing) {
-        const newQty = String(Number(existing.quantity) + Number(vest.quantity));
-        await db
-          .update(holdings)
-          .set({ quantity: newQty, updatedAt: new Date() })
-          .where(eq(holdings.id, existing.id));
-      } else {
-        await db.insert(holdings).values({
-          userId: grant.userId,
-          instrumentId,
-          accountId: grant.brokerAccountId,
-          quantity: vest.quantity,
-        });
+    // Atomic: deposit shares and mark the vest done together.
+    await db.transaction(async (tx) => {
+      if (grant.brokerAccountId && Number(netQuantity) > 0) {
+        const [existing] = await tx
+          .select({ id: holdings.id, quantity: holdings.quantity })
+          .from(holdings)
+          .where(
+            and(
+              eq(holdings.userId, grant.userId),
+              eq(holdings.instrumentId, instrumentId),
+              eq(holdings.accountId, grant.brokerAccountId),
+            ),
+          )
+          .limit(1);
+
+        if (existing) {
+          const newQty = String(Number(existing.quantity) + Number(netQuantity));
+          await tx
+            .update(holdings)
+            .set({ quantity: newQty, updatedAt: new Date() })
+            .where(eq(holdings.id, existing.id));
+        } else {
+          await tx.insert(holdings).values({
+            userId: grant.userId,
+            instrumentId,
+            accountId: grant.brokerAccountId,
+            quantity: netQuantity,
+          });
+        }
       }
-    }
 
-    await db
-      .update(rsuVests)
-      .set({ status: "vested" })
-      .where(eq(rsuVests.id, vest.id));
+      await tx.update(rsuVests).set({ status: "vested" }).where(eq(rsuVests.id, vest.id));
+    });
     vested += 1;
   }
 

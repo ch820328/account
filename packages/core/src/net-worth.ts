@@ -1,9 +1,11 @@
 import {
   type Database,
   accounts,
+  forecastSettings,
   fxRates,
   holdings,
   instruments,
+  loanLedgerEntries,
   priceSnapshots,
   recurringRules,
   transactions,
@@ -12,6 +14,7 @@ import { convert, fromDecimal, money, multiply } from "@acc/money";
 import { and, desc, eq, gte, inArray } from "drizzle-orm";
 import { getAccountBalances } from "./balances";
 import { getBaseCurrency } from "./currency";
+import { signedLedgerAmount, type LoanLedgerKind } from "./lending";
 
 export interface NetWorthBreakdown {
   baseCurrency: string;
@@ -20,6 +23,9 @@ export interface NetWorthBreakdown {
   liabilitiesMinor: bigint;
   cashAndBankMinor: bigint;
   investmentsMinor: bigint;
+  /** Personal lending ledger, when included in net worth (else 0). */
+  receivableMinor: bigint;
+  payableMinor: bigint;
   accounts: {
     accountId: string;
     name: string;
@@ -52,7 +58,7 @@ export interface NetWorthBreakdown {
   }[];
 }
 
-async function latestFxRates(db: Database): Promise<Map<string, string>> {
+export async function latestFxRates(db: Database): Promise<Map<string, string>> {
   const base = getBaseCurrency();
   const rows = await db.select().from(fxRates).orderBy(desc(fxRates.asOf));
 
@@ -65,7 +71,7 @@ async function latestFxRates(db: Database): Promise<Map<string, string>> {
   return map;
 }
 
-function fxRateToBase(
+export function fxRateToBase(
   currency: string,
   base: string,
   rates: Map<string, string>,
@@ -82,7 +88,7 @@ function fxRateToBase(
   return null;
 }
 
-function toBaseMinor(
+export function toBaseMinor(
   amountMinor: bigint,
   currency: string,
   base: string,
@@ -190,6 +196,35 @@ export async function computeNetWorth(
     });
   }
 
+  // Optional: fold the personal lending ledger into net worth. Net per person
+  // (positive = receivable/asset, negative = payable/liability), in base currency.
+  let receivableMinor = 0n;
+  let payableMinor = 0n;
+  const [settings] = await db
+    .select({ include: forecastSettings.includeLendingInNetWorth })
+    .from(forecastSettings)
+    .where(eq(forecastSettings.userId, userId))
+    .limit(1);
+
+  if (settings?.include) {
+    const entries = await db
+      .select()
+      .from(loanLedgerEntries)
+      .where(eq(loanLedgerEntries.userId, userId));
+    const perPerson = new Map<string, bigint>();
+    for (const e of entries) {
+      const signed = signedLedgerAmount(e.kind as LoanLedgerKind, e.amountMinor);
+      const baseSigned = toBaseMinor(signed, e.currency, base, rates);
+      perPerson.set(e.counterparty, (perPerson.get(e.counterparty) ?? 0n) + baseSigned);
+    }
+    for (const net of perPerson.values()) {
+      if (net > 0n) receivableMinor += net;
+      else if (net < 0n) payableMinor += -net;
+    }
+    assetsMinor += receivableMinor;
+    liabilitiesMinor += payableMinor;
+  }
+
   const now = new Date();
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
 
@@ -261,6 +296,8 @@ export async function computeNetWorth(
     liabilitiesMinor,
     cashAndBankMinor,
     investmentsMinor,
+    receivableMinor,
+    payableMinor,
     accounts: accountRows,
     holdings: holdingsOut,
     monthlyCashflow,

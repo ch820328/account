@@ -33,7 +33,6 @@ export async function generateDueInstallments(
       continue;
     }
 
-    let runDate = schedule.nextRunDate;
     const monthly = {
       frequency: "monthly" as const,
       interval: 1,
@@ -41,39 +40,41 @@ export async function generateDueInstallments(
       weekday: null,
     };
 
-    let completed = schedule.completedPeriods;
+    await db.transaction(async (tx) => {
+      let runDate = schedule.nextRunDate;
+      let completed = schedule.completedPeriods;
 
-    while (runDate <= asOf) {
-      if (schedule.totalPeriods != null && completed >= schedule.totalPeriods) break;
+      while (runDate <= asOf) {
+        if (schedule.totalPeriods != null && completed >= schedule.totalPeriods) break;
 
-      await db.insert(transactions).values({
-        userId: schedule.userId,
-        accountId: schedule.accountId,
-        categoryId: schedule.categoryId,
-        type: "expense",
-        amountMinor: schedule.amountMinor,
-        currency: schedule.currency,
-        occurredAt: parseIsoDate(runDate),
-        note: schedule.note ?? schedule.name,
-        installmentScheduleId: schedule.id,
-      });
-      created += 1;
-      completed += 1;
+        await tx.insert(transactions).values({
+          userId: schedule.userId,
+          accountId: schedule.accountId,
+          categoryId: schedule.categoryId,
+          type: "expense",
+          amountMinor: schedule.amountMinor,
+          currency: schedule.currency,
+          occurredAt: parseIsoDate(runDate),
+          note: schedule.note ?? schedule.name,
+          source: "installment",
+          installmentScheduleId: schedule.id,
+        });
+        created += 1;
+        completed += 1;
 
-      runDate = advanceRecurringDate(runDate, monthly);
-    }
+        runDate = advanceRecurringDate(runDate, monthly);
+      }
 
-    const done =
-      schedule.totalPeriods != null && completed >= schedule.totalPeriods;
-
-    await db
-      .update(installmentSchedules)
-      .set({
-        nextRunDate: runDate,
-        completedPeriods: completed,
-        active: done ? false : schedule.active,
-      })
-      .where(eq(installmentSchedules.id, schedule.id));
+      const done = schedule.totalPeriods != null && completed >= schedule.totalPeriods;
+      await tx
+        .update(installmentSchedules)
+        .set({
+          nextRunDate: runDate,
+          completedPeriods: completed,
+          active: done ? false : schedule.active,
+        })
+        .where(eq(installmentSchedules.id, schedule.id));
+    });
   }
 
   return { processed: due.length, created };

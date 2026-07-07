@@ -43,8 +43,11 @@ export function advanceRecurringDate(from: string, schedule: RecurringSchedule):
       break;
     }
     case "monthly": {
-      d.setMonth(d.getMonth() + interval);
       const dom = schedule.dayOfMonth ?? d.getDate();
+      // Set day to 1 first so adding months never overflows (e.g. Jan 31 + 1
+      // must land in Feb, not spill into March), then clamp to the real day.
+      d.setDate(1);
+      d.setMonth(d.getMonth() + interval);
       const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
       d.setDate(Math.min(dom, lastDay));
       break;
@@ -105,7 +108,6 @@ export async function generateDueRecurringTransactions(
       continue;
     }
 
-    let runDate = rule.nextRunDate;
     const schedule: RecurringSchedule = {
       frequency: rule.frequency,
       interval: rule.interval,
@@ -113,29 +115,36 @@ export async function generateDueRecurringTransactions(
       weekday: rule.weekday,
     };
 
-    while (runDate <= asOf) {
-      if (rule.endDate && runDate > rule.endDate) break;
+    // Atomic per rule: all due postings + the next-run advance commit together,
+    // so a crash can't post without advancing (which would double-post on retry).
+    await db.transaction(async (tx) => {
+      let runDate = rule.nextRunDate;
+      while (runDate <= asOf) {
+        if (rule.endDate && runDate > rule.endDate) break;
 
-      await db.insert(transactions).values({
-        userId: rule.userId,
-        accountId: rule.accountId,
-        categoryId: rule.categoryId,
-        type: rule.kind,
-        amountMinor: rule.amountMinor,
-        currency: rule.currency,
-        occurredAt: parseIsoDate(runDate),
-        note: rule.note ?? rule.name,
-        recurringRuleId: rule.id,
-      });
-      created += 1;
+        await tx.insert(transactions).values({
+          userId: rule.userId,
+          accountId: rule.accountId,
+          transferAccountId: rule.kind === "transfer" ? rule.transferAccountId : null,
+          categoryId: rule.kind === "transfer" ? null : rule.categoryId,
+          type: rule.kind,
+          amountMinor: rule.amountMinor,
+          currency: rule.currency,
+          occurredAt: parseIsoDate(runDate),
+          note: rule.note ?? rule.name,
+          source: "recurring",
+          recurringRuleId: rule.id,
+        });
+        created += 1;
 
-      runDate = advanceRecurringDate(runDate, schedule);
-    }
+        runDate = advanceRecurringDate(runDate, schedule);
+      }
 
-    await db
-      .update(recurringRules)
-      .set({ nextRunDate: runDate })
-      .where(eq(recurringRules.id, rule.id));
+      await tx
+        .update(recurringRules)
+        .set({ nextRunDate: runDate })
+        .where(eq(recurringRules.id, rule.id));
+    });
   }
 
   return { processed: due.length, created };

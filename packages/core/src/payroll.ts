@@ -48,7 +48,6 @@ export async function generateDuePayrolls(
       .where(eq(payrollLines.profileId, profile.id))
       .orderBy(payrollLines.sortOrder);
 
-    let runDate = profile.nextRunDate;
     const schedule = {
       frequency: "monthly" as const,
       interval: 1,
@@ -56,31 +55,35 @@ export async function generateDuePayrolls(
       weekday: null,
     };
 
-    while (runDate <= asOf) {
-      const occurredAt = parseIsoDate(runDate);
-      const label = profile.name;
+    await db.transaction(async (tx) => {
+      let runDate = profile.nextRunDate;
+      while (runDate <= asOf) {
+        const occurredAt = parseIsoDate(runDate);
+        const label = profile.name;
 
-      for (const line of lines) {
-        await db.insert(transactions).values({
-          userId: profile.userId,
-          accountId: profile.depositAccountId,
-          categoryId: line.categoryId,
-          type: line.kind === "earning" ? "income" : "expense",
-          amountMinor: line.amountMinor,
-          currency: profile.currency,
-          occurredAt,
-          note: `${label} · ${line.name}`,
-        });
-        created += 1;
+        for (const line of lines) {
+          await tx.insert(transactions).values({
+            userId: profile.userId,
+            accountId: profile.depositAccountId,
+            categoryId: line.categoryId,
+            type: line.kind === "earning" ? "income" : "expense",
+            amountMinor: line.amountMinor,
+            currency: profile.currency,
+            occurredAt,
+            note: `${label} · ${line.name}`,
+            source: "payroll",
+          });
+          created += 1;
+        }
+
+        runDate = advanceRecurringDate(runDate, schedule);
       }
 
-      runDate = advanceRecurringDate(runDate, schedule);
-    }
-
-    await db
-      .update(payrollProfiles)
-      .set({ nextRunDate: runDate })
-      .where(eq(payrollProfiles.id, profile.id));
+      await tx
+        .update(payrollProfiles)
+        .set({ nextRunDate: runDate })
+        .where(eq(payrollProfiles.id, profile.id));
+    });
   }
 
   return { processed: due.length, created };
