@@ -1,5 +1,5 @@
 import { type Database, accounts, categories, transactions } from "@acc/db";
-import { and, asc, eq, gte, lt } from "drizzle-orm";
+import { and, asc, eq, gte, lt, lte, or, isNull } from "drizzle-orm";
 import { isLiabilityAccount } from "./accounts";
 import { getBaseCurrency } from "./currency";
 import { latestFxRates, toBaseMinor } from "./net-worth";
@@ -22,28 +22,50 @@ export interface MonthlyBreakdown {
 export async function monthlyBreakdown(
   db: Database,
   userId: string,
-  now: Date = new Date(),
+  nowOrMonth?: Date | string,
+  baseCurrencyOverride?: string,
 ): Promise<MonthlyBreakdown> {
-  const base = getBaseCurrency();
-  const rates = await latestFxRates(db);
-  const start = new Date(now.getFullYear(), now.getMonth(), 1);
-  const end = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  const base = (baseCurrencyOverride || getBaseCurrency()).toUpperCase();
+  let start: Date;
+  let end: Date;
+  let monthStr: string;
 
-  const rows = await db
-    .select({
-      type: transactions.type,
-      amountMinor: transactions.amountMinor,
-      currency: transactions.currency,
-      source: transactions.source,
-    })
-    .from(transactions)
-    .where(
-      and(
-        eq(transactions.userId, userId),
-        gte(transactions.occurredAt, start),
-        lt(transactions.occurredAt, end),
+  if (typeof nowOrMonth === "string" && /^\d{4}-\d{2}$/.test(nowOrMonth)) {
+    monthStr = nowOrMonth;
+    const [y, m] = nowOrMonth.split("-").map(Number);
+    start = new Date(y!, m! - 1, 1);
+    end = new Date(y!, m!, 1);
+  } else {
+    const ref = nowOrMonth instanceof Date ? nowOrMonth : new Date();
+    monthStr = `${ref.getFullYear()}-${String(ref.getMonth() + 1).padStart(2, "0")}`;
+    start = new Date(ref.getFullYear(), ref.getMonth(), 1);
+    end = new Date(ref.getFullYear(), ref.getMonth() + 1, 1);
+  }
+
+  const [rates, rows] = await Promise.all([
+    latestFxRates(db, end),
+    db
+      .select({
+        type: transactions.type,
+        amountMinor: transactions.amountMinor,
+        currency: transactions.currency,
+        source: transactions.source,
+      })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.userId, userId),
+          or(
+            eq(transactions.statementMonth, monthStr),
+            and(
+              or(isNull(transactions.statementMonth), eq(transactions.statementMonth, "")),
+              gte(transactions.occurredAt, start),
+              lt(transactions.occurredAt, end),
+            ),
+          ),
+        ),
       ),
-    );
+  ]);
 
   let incomeMinor = 0n;
   let living = 0n;
@@ -92,6 +114,98 @@ export async function monthlyBreakdown(
   };
 }
 
+export interface AnnualBreakdown extends MonthlyBreakdown {
+  year: number;
+}
+
+/** Income & expense-by-source breakdown for an entire calendar year, in base currency. */
+export async function annualBreakdown(
+  db: Database,
+  userId: string,
+  year: number = new Date().getFullYear(),
+  baseCurrencyOverride?: string,
+): Promise<AnnualBreakdown> {
+  const base = (baseCurrencyOverride || getBaseCurrency()).toUpperCase();
+  const start = new Date(year, 0, 1);
+  const end = new Date(year + 1, 0, 1);
+  const yearStr = String(year);
+
+  const [rates, rows] = await Promise.all([
+    latestFxRates(db, end),
+    db
+      .select({
+        type: transactions.type,
+        amountMinor: transactions.amountMinor,
+        currency: transactions.currency,
+        source: transactions.source,
+      })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.userId, userId),
+          or(
+            and(
+              gte(transactions.statementMonth, `${yearStr}-01`),
+              lte(transactions.statementMonth, `${yearStr}-12`),
+            ),
+            and(
+              or(isNull(transactions.statementMonth), eq(transactions.statementMonth, "")),
+              gte(transactions.occurredAt, start),
+              lt(transactions.occurredAt, end),
+            ),
+          ),
+        ),
+      ),
+  ]);
+
+  let incomeMinor = 0n;
+  let living = 0n;
+  let installment = 0n;
+  let recurring = 0n;
+  let payroll = 0n;
+  let other = 0n;
+  let loanTransfer = 0n;
+
+  for (const r of rows) {
+    const amt = toBaseMinor(r.amountMinor, r.currency, base, rates);
+    if (r.type === "income") {
+      incomeMinor += amt;
+    } else if (r.type === "expense") {
+      switch (r.source) {
+        case "manual":
+          living += amt;
+          break;
+        case "installment":
+          installment += amt;
+          break;
+        case "recurring":
+          recurring += amt;
+          break;
+        case "payroll":
+          payroll += amt;
+          break;
+        default:
+          other += amt;
+      }
+    } else if (r.type === "transfer" && r.source === "loan") {
+      loanTransfer += amt;
+    }
+  }
+
+  return {
+    year,
+    baseCurrency: base,
+    incomeMinor,
+    expenseMinor: living + installment + recurring + payroll + other,
+    living,
+    installment,
+    recurring,
+    payroll,
+    other,
+    loanTransfer,
+  };
+}
+
 export interface MonthlyPoint {
   month: string;
   incomeMinor: bigint;
@@ -104,9 +218,10 @@ export async function incomeExpenseTrend(
   userId: string,
   months = 12,
   now: Date = new Date(),
+  baseCurrencyOverride?: string,
 ): Promise<{ baseCurrency: string; points: MonthlyPoint[] }> {
-  const base = getBaseCurrency();
-  const rates = await latestFxRates(db);
+  const base = (baseCurrencyOverride || getBaseCurrency()).toUpperCase();
+  const rates = await latestFxRates(db, now);
   const start = new Date(now.getFullYear(), now.getMonth() - (months - 1), 1);
 
   const rows = await db
@@ -264,43 +379,102 @@ export async function monthlyHistory(
 }
 
 /** Expense totals by category for a single month (YYYY-MM), base currency. */
+export interface CategoryTotal {
+  categoryId: string | null;
+  name: string;
+  parentName: string;
+  expenseMinor: bigint;
+}
+
+/** Expense totals by category for a single month (YYYY-MM), base currency. */
 export async function monthCategoryTotals(
   db: Database,
   userId: string,
   month: string,
+  baseCurrencyOverride?: string,
 ): Promise<{ baseCurrency: string; totals: CategoryTotal[] }> {
-  const base = getBaseCurrency();
-  const rates = await latestFxRates(db);
+  const base = (baseCurrencyOverride || getBaseCurrency()).toUpperCase();
   const [y, m] = month.split("-").map(Number);
   const start = new Date(y!, m! - 1, 1);
   const end = new Date(y!, m!, 1);
 
-  const rows = await db
-    .select({
-      amountMinor: transactions.amountMinor,
-      currency: transactions.currency,
-      categoryName: categories.name,
-      source: transactions.source,
-    })
-    .from(transactions)
-    .leftJoin(categories, eq(transactions.categoryId, categories.id))
-    .where(
-      and(
-        eq(transactions.userId, userId),
-        eq(transactions.type, "expense"),
-        gte(transactions.occurredAt, start),
-        lt(transactions.occurredAt, end),
+  const [rates, allCats, rows] = await Promise.all([
+    latestFxRates(db, end),
+    db.select().from(categories).where(eq(categories.userId, userId)),
+    db
+      .select({
+        categoryId: transactions.categoryId,
+        amountMinor: transactions.amountMinor,
+        currency: transactions.currency,
+        source: transactions.source,
+      })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.userId, userId),
+          eq(transactions.type, "expense"),
+          or(
+            eq(transactions.statementMonth, month),
+            and(
+              or(isNull(transactions.statementMonth), eq(transactions.statementMonth, "")),
+              gte(transactions.occurredAt, start),
+              lt(transactions.occurredAt, end),
+            ),
+          ),
+        ),
       ),
-    );
+  ]);
 
-  const byCat = new Map<string, bigint>();
+  const catMap = new Map(allCats.map((c) => [c.id, c]));
+
+  const byCatKey = new Map<string, CategoryTotal>();
   for (const r of rows) {
-    const name = r.categoryName ?? (r.source !== "manual" ? "自動排程" : "未分類");
-    byCat.set(name, (byCat.get(name) ?? 0n) + toBaseMinor(r.amountMinor, r.currency, base, rates));
+    let name = "未分類";
+    let parentName = "待分類項目";
+    const catId: string | null = r.categoryId;
+
+    if (r.categoryId && catMap.has(r.categoryId)) {
+      const cat = catMap.get(r.categoryId)!;
+      name = cat.name;
+      if (cat.parentId && catMap.has(cat.parentId)) {
+        parentName = catMap.get(cat.parentId)!.name;
+      } else {
+        parentName = cat.name;
+      }
+    } else if (r.source !== "manual") {
+      name = "自動排程";
+      parentName = "固定扣款";
+    }
+
+    const key = `${parentName}:::${name}`;
+    const baseAmt = toBaseMinor(r.amountMinor, r.currency, base, rates);
+    const existing = byCatKey.get(key);
+    if (existing) {
+      existing.expenseMinor += baseAmt;
+    } else {
+      byCatKey.set(key, { categoryId: catId, name, parentName, expenseMinor: baseAmt });
+    }
   }
-  const totals = [...byCat.entries()]
-    .map(([name, expenseMinor]) => ({ name, expenseMinor }))
-    .sort((a, b) => (b.expenseMinor > a.expenseMinor ? 1 : -1));
+
+  // Ensure all user expense categories (parents) are represented, even if 0 expense
+  const parentCats = allCats.filter((c) => c.kind === "expense" && !c.parentId);
+  for (const p of parentCats) {
+    const hasParentEntries = [...byCatKey.values()].some((item) => item.parentName === p.name);
+    if (!hasParentEntries) {
+      const children = allCats.filter((c) => c.parentId === p.id);
+      if (children.length > 0) {
+        for (const child of children) {
+          const key = `${p.name}:::${child.name}`;
+          byCatKey.set(key, { categoryId: child.id, name: child.name, parentName: p.name, expenseMinor: 0n });
+        }
+      } else {
+        const key = `${p.name}:::${p.name}`;
+        byCatKey.set(key, { categoryId: p.id, name: p.name, parentName: p.name, expenseMinor: 0n });
+      }
+    }
+  }
+
+  const totals = [...byCatKey.values()].sort((a, b) => (b.expenseMinor > a.expenseMinor ? 1 : b.expenseMinor < a.expenseMinor ? -1 : 0));
   return { baseCurrency: base, totals };
 }
 
@@ -342,30 +516,32 @@ export async function monthExpenseByCategoryId(
   return byId;
 }
 
-export interface CategoryTotal {
-  name: string;
-  expenseMinor: bigint;
-}
 
 /** This-year expense totals grouped by category (base currency, desc). */
 export async function categoryExpenseTotals(
   db: Database,
   userId: string,
   year: number = new Date().getFullYear(),
+  baseCurrencyOverride?: string,
 ): Promise<{ baseCurrency: string; totals: CategoryTotal[] }> {
-  const base = getBaseCurrency();
-  const rates = await latestFxRates(db);
+  const base = (baseCurrencyOverride || getBaseCurrency()).toUpperCase();
   const start = new Date(year, 0, 1);
   const end = new Date(year + 1, 0, 1);
+  const rates = await latestFxRates(db, end);
+
+  const userCats = await db
+    .select()
+    .from(categories)
+    .where(eq(categories.userId, userId));
+  const catMap = new Map(userCats.map((c) => [c.id, c]));
 
   const rows = await db
     .select({
       amountMinor: transactions.amountMinor,
       currency: transactions.currency,
-      categoryName: categories.name,
+      categoryId: transactions.categoryId,
     })
     .from(transactions)
-    .leftJoin(categories, eq(transactions.categoryId, categories.id))
     .where(
       and(
         eq(transactions.userId, userId),
@@ -375,16 +551,33 @@ export async function categoryExpenseTotals(
       ),
     );
 
-  const byCat = new Map<string, bigint>();
+  const byCatKey = new Map<string, CategoryTotal>();
   for (const r of rows) {
-    const name = r.categoryName ?? "未分類";
+    let name = "未分類";
+    let parentName = "一般支出";
+    const catId: string | null = r.categoryId;
+
+    if (r.categoryId && catMap.has(r.categoryId)) {
+      const c = catMap.get(r.categoryId)!;
+      name = c.name;
+      if (c.parentId && catMap.has(c.parentId)) {
+        parentName = catMap.get(c.parentId)!.name;
+      } else {
+        parentName = c.name;
+      }
+    }
+
+    const key = `${parentName}:::${name}`;
     const amt = toBaseMinor(r.amountMinor, r.currency, base, rates);
-    byCat.set(name, (byCat.get(name) ?? 0n) + amt);
+    const existing = byCatKey.get(key);
+    if (existing) {
+      existing.expenseMinor += amt;
+    } else {
+      byCatKey.set(key, { categoryId: catId, name, parentName, expenseMinor: amt });
+    }
   }
 
-  const totals = [...byCat.entries()]
-    .map(([name, expenseMinor]) => ({ name, expenseMinor }))
-    .sort((a, b) => (b.expenseMinor > a.expenseMinor ? 1 : -1));
+  const totals = [...byCatKey.values()].sort((a, b) => (b.expenseMinor > a.expenseMinor ? 1 : -1));
 
   return { baseCurrency: base, totals };
 }

@@ -11,7 +11,7 @@ import {
   transactions,
 } from "@acc/db";
 import { convert, fromDecimal, money, multiply } from "@acc/money";
-import { and, desc, eq, gte, inArray } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte } from "drizzle-orm";
 import { getAccountBalances } from "./balances";
 import { getBaseCurrency } from "./currency";
 import { signedLedgerAmount, type LoanLedgerKind } from "./lending";
@@ -58,9 +58,20 @@ export interface NetWorthBreakdown {
   }[];
 }
 
-export async function latestFxRates(db: Database): Promise<Map<string, string>> {
+export async function latestFxRates(
+  db: Database,
+  asOf?: Date | string,
+): Promise<Map<string, string>> {
   const base = getBaseCurrency();
-  const rows = await db.select().from(fxRates).orderBy(desc(fxRates.asOf));
+  const asOfStr = asOf
+    ? asOf instanceof Date
+      ? asOf.toISOString().slice(0, 10)
+      : asOf
+    : undefined;
+
+  const rows = asOfStr
+    ? await db.select().from(fxRates).where(lte(fxRates.asOf, asOfStr)).orderBy(desc(fxRates.asOf))
+    : await db.select().from(fxRates).orderBy(desc(fxRates.asOf));
 
   const map = new Map<string, string>();
   for (const row of rows) {
@@ -77,14 +88,30 @@ export function fxRateToBase(
   rates: Map<string, string>,
 ): string | null {
   const c = currency.toUpperCase();
-  if (c === base) return "1";
-  const direct = rates.get(`${c}_${base}`);
+  const b = base.toUpperCase();
+  if (c === b) return "1";
+
+  // 1. Direct rate
+  const direct = rates.get(`${c}_${b}`);
   if (direct) return direct;
-  const inverse = rates.get(`${base}_${c}`);
+
+  // 2. Inverse rate
+  const inverse = rates.get(`${b}_${c}`);
   if (inverse) {
     const inv = Number(inverse);
     if (inv > 0) return String(1 / inv);
   }
+
+  // 3. Triangulation via USD if neither currency is USD
+  if (c !== "USD" && b !== "USD") {
+    const toUsd = fxRateToBase(c, "USD", rates);
+    const usdToBase = fxRateToBase("USD", b, rates);
+    if (toUsd && usdToBase) {
+      const cross = Number(toUsd) * Number(usdToBase);
+      if (cross > 0 && !isNaN(cross)) return String(cross);
+    }
+  }
+
   return null;
 }
 
@@ -95,15 +122,21 @@ export function toBaseMinor(
   rates: Map<string, string>,
 ): bigint {
   const rate = fxRateToBase(currency, base, rates);
-  if (!rate) return amountMinor;
+  if (!rate) {
+    if (currency.toUpperCase() !== base.toUpperCase()) {
+      console.warn(`[net-worth] Missing FX rate for ${currency} -> ${base}. Fallback to unconverted amount.`);
+    }
+    return amountMinor;
+  }
   return convert(money(amountMinor, currency), rate, base).amount;
 }
 
 export async function computeNetWorth(
   db: Database,
   userId: string,
+  baseCurrencyOverride?: string,
 ): Promise<NetWorthBreakdown> {
-  const base = getBaseCurrency();
+  const base = (baseCurrencyOverride || getBaseCurrency()).toUpperCase();
   const rates = await latestFxRates(db);
   const balances = await getAccountBalances(db, userId);
 
@@ -242,6 +275,7 @@ export async function computeNetWorth(
       kind: recurringRules.kind,
       amountMinor: recurringRules.amountMinor,
       currency: recurringRules.currency,
+      nextRunDate: recurringRules.nextRunDate,
     })
     .from(recurringRules)
     .where(and(eq(recurringRules.userId, userId), eq(recurringRules.active, true)));
@@ -263,16 +297,24 @@ export async function computeNetWorth(
     cashflowByCurrency.set(row.currency, entry);
   }
 
+  const todayIso = now.toISOString().slice(0, 10);
+  const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  const endOfMonthIso = `${endOfMonth.getFullYear()}-${String(endOfMonth.getMonth() + 1).padStart(2, "0")}-${String(endOfMonth.getDate()).padStart(2, "0")}`;
+
   for (const rule of activeRecurring) {
-    const entry = cashflowByCurrency.get(rule.currency) ?? {
-      income: 0n,
-      expense: 0n,
-      projectedIncome: 0n,
-      projectedExpense: 0n,
-    };
-    if (rule.kind === "income") entry.projectedIncome += rule.amountMinor;
-    else entry.projectedExpense += rule.amountMinor;
-    cashflowByCurrency.set(rule.currency, entry);
+    // Only project rules whose next execution date is still upcoming in the current month.
+    // Rules that have already executed this month are already captured in `monthRows`.
+    if (rule.nextRunDate >= todayIso && rule.nextRunDate <= endOfMonthIso) {
+      const entry = cashflowByCurrency.get(rule.currency) ?? {
+        income: 0n,
+        expense: 0n,
+        projectedIncome: 0n,
+        projectedExpense: 0n,
+      };
+      if (rule.kind === "income") entry.projectedIncome += rule.amountMinor;
+      else if (rule.kind === "expense") entry.projectedExpense += rule.amountMinor;
+      cashflowByCurrency.set(rule.currency, entry);
+    }
   }
 
   const monthlyCashflow = Array.from(cashflowByCurrency.entries()).map(([currency, v]) => {

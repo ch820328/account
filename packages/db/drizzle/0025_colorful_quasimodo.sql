@@ -1,0 +1,1 @@
+ALTER TABLE "loan_payment_tiers" ADD COLUMN "is_grace_period" boolean DEFAULT false NOT NULL;

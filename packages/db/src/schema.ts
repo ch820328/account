@@ -12,6 +12,7 @@ import {
   timestamp,
   unique,
   uuid,
+  varchar,
 } from "drizzle-orm/pg-core";
 
 /* ------------------------------------------------------------------ */
@@ -101,7 +102,7 @@ export const TRANSACTION_SOURCES = [
 ] as const;
 export const FREQUENCIES = ["daily", "weekly", "monthly", "yearly"] as const;
 export const PAYROLL_LINE_KINDS = ["earning", "deduction"] as const;
-export const RSU_VEST_STATUSES = ["pending", "vested"] as const;
+export const RSU_VEST_STATUSES = ["pending", "vested", "sold"] as const;
 export const MARKETS = ["TW", "US"] as const;
 export const INSTRUMENT_TYPES = ["stock", "etf", "fund", "crypto"] as const;
 /** Personal IOU ledger entry kinds (money lent to / borrowed from a person). */
@@ -129,8 +130,18 @@ export const accounts = pgTable(
     loanRateAnnual: numeric("loan_rate_annual"),
     loanTermMonths: integer("loan_term_months"),
     loanStartDate: date("loan_start_date"),
+    parentId: uuid("parent_id"),
+    bankCode: text("bank_code"),
+    accountNumber: text("account_number"),
+    billingDay: integer("billing_day"),
+    repaymentDay: integer("repayment_day"),
+    excludeFromNetWorth: boolean("exclude_from_net_worth").notNull().default(false),
     archived: boolean("archived").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    balanceUpdatedAt: timestamp("balance_updated_at", { withTimezone: true }).notNull().defaultNow(),
+    cardNumber: text("card_number"),
+    cardExpiry: text("card_expiry"),
+    cardBrand: text("card_brand"),
   },
   (t) => ({
     userIdx: index("accounts_user_idx").on(t.userId),
@@ -146,6 +157,7 @@ export const categories = pgTable("categories", {
   kind: text("kind").notNull().$type<(typeof CATEGORY_KINDS)[number]>(),
   // Self-reference for sub-items, e.g. salary -> base / bonus / overtime.
   parentId: uuid("parent_id"),
+  sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -175,6 +187,8 @@ export const recurringRules = pgTable("recurring_rules", {
   endDate: date("end_date"),
   note: text("note"),
   active: boolean("active").notNull().default(true),
+  autoCommit: boolean("auto_commit").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
   userIdx: index("recurring_rules_user_idx").on(t.userId),
@@ -230,6 +244,8 @@ export const rsuGrants = pgTable("rsu_grants", {
   totalQuantity: numeric("total_quantity").notNull(),
   startDate: date("start_date").notNull(),
   periods: integer("periods").notNull().default(48),
+  frequency: text("frequency").notNull().default("monthly"),
+  estimatedPrice: numeric("estimated_price"),
   /**
    * Percentage of each vest automatically sold to cover withholding tax
    * (sell-to-cover). Only the remaining shares are deposited as holdings.
@@ -253,10 +269,40 @@ export const rsuVests = pgTable(
       .notNull()
       .$type<(typeof RSU_VEST_STATUSES)[number]>()
       .default("pending"),
+    vestPrice: numeric("vest_price"),
+    sellToCoverPct: numeric("sell_to_cover_pct"),
+    soldDate: date("sold_date"),
+    soldPrice: numeric("sold_price"),
+    soldFee: numeric("sold_fee"),
   },
   (t) => ({
     grantIdx: index("rsu_vests_grant_idx").on(t.grantId),
   }),
+);
+
+export const rsuSells = pgTable(
+  "rsu_sells",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    vestId: uuid("vest_id")
+      .notNull()
+      .references(() => rsuVests.id, { onDelete: "cascade" }),
+    soldDate: date("sold_date").notNull(),
+    quantity: numeric("quantity").notNull(),
+    soldPrice: numeric("sold_price").notNull(),
+    soldFee: numeric("sold_fee").notNull().default("0"),
+    receivedAmount: numeric("received_amount").notNull(),
+    receivedAccountId: uuid("received_account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    vestIdx: index("rsu_sells_vest_idx").on(t.vestId),
+  })
 );
 
 /** Monthly loan/mortgage payment: transfer from bank → liability account. */
@@ -281,6 +327,8 @@ export const loanPaymentSchedules = pgTable("loan_payment_schedules", {
   completedPeriods: integer("completed_periods").notNull().default(0),
   /** Total number of payments; loan auto-closes after this. Null = open-ended. */
   totalPeriods: integer("total_periods"),
+  amortizationMethod: text("amortization_method").notNull().default("flat"),
+  rateMargin: numeric("rate_margin").notNull().default("0"),
   active: boolean("active").notNull().default(true),
   note: text("note"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -299,10 +347,31 @@ export const loanPaymentTiers = pgTable(
       .references(() => loanPaymentSchedules.id, { onDelete: "cascade" }),
     fromPeriod: integer("from_period").notNull(),
     toPeriod: integer("to_period").notNull(),
+    isGracePeriod: boolean("is_grace_period").default(false).notNull(),
     amountMinor: bigint("amount_minor", { mode: "bigint" }).notNull(),
+    rateMargin: numeric("rate_margin"),
   },
   (t) => ({
     scheduleIdx: index("loan_payment_tiers_schedule_idx").on(t.scheduleId),
+  }),
+);
+
+/**
+ * Global or per-loan rate adjustments applied over time (升降息紀錄).
+ */
+export const loanRateAdjustments = pgTable(
+  "loan_rate_adjustments",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    scheduleId: uuid("schedule_id")
+      .notNull()
+      .references(() => loanPaymentSchedules.id, { onDelete: "cascade" }),
+    fromPeriod: integer("from_period").notNull(),
+    toPeriod: integer("to_period"),
+    adjustmentRate: numeric("adjustment_rate").notNull(),
+  },
+  (t) => ({
+    scheduleIdx: index("loan_rate_adjustments_schedule_idx").on(t.scheduleId),
   }),
 );
 
@@ -338,6 +407,7 @@ export const forecastSettings = pgTable("forecast_settings", {
     .default(sql`0`),
   currency: char("currency", { length: 3 }).notNull().default("TWD"),
   horizonMonths: integer("horizon_months").notNull().default(12),
+  loanBaseRate: numeric("loan_base_rate").notNull().default("1.85"),
   /**
    * Optional comma-separated category ids that define "living expense" when
    * syncing actuals from the ledger. Empty = all non-scheduled expenses count.
@@ -431,12 +501,30 @@ export const monthlyForecasts = pgTable(
       .references(() => user.id, { onDelete: "cascade" }),
     month: date("month").notNull(),
     livingExpenseMinor: bigint("living_expense_minor", { mode: "bigint" }).notNull(),
+    actualExpenseMinor: bigint("actual_expense_minor", { mode: "bigint" }),
     isActual: boolean("is_actual").notNull().default(false),
     note: text("note"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
     userMonthUnique: unique("monthly_forecasts_user_month_unique").on(t.userId, t.month),
+  }),
+);
+
+export const monthConfirmations = pgTable(
+  "month_confirmations",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    month: varchar("month", { length: 7 }).notNull(),
+    confirmed: boolean("confirmed").notNull().default(true),
+    confirmedAt: timestamp("confirmed_at", { withTimezone: true }).notNull().defaultNow(),
+    note: text("note"),
+  },
+  (t) => ({
+    userMonthUnique: unique("month_confirmations_user_month_unique").on(t.userId, t.month),
   }),
 );
 
@@ -457,12 +545,16 @@ export const transactions = pgTable(
     }),
     type: text("type").notNull().$type<(typeof TRANSACTION_TYPES)[number]>(),
     amountMinor: bigint("amount_minor", { mode: "bigint" }).notNull(),
+    transferAmountMinor: bigint("transfer_amount_minor", { mode: "bigint" }),
     currency: char("currency", { length: 3 }).notNull(),
     // Snapshot of the FX rate (currency -> base currency) at the time of the tx,
     // so historical net worth can be reproduced exactly.
     fxRateToBase: numeric("fx_rate_to_base"),
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull().defaultNow(),
     note: text("note"),
+    isPaid: boolean("is_paid").notNull().default(false),
+    /** Optional manual statement month assignment for credit cards (e.g. "2026-08", "2026-09"). */
+    statementMonth: varchar("statement_month", { length: 7 }),
     /** Origin of the record: manual bookkeeping or an automated schedule. */
     source: text("source")
       .notNull()
@@ -479,7 +571,141 @@ export const transactions = pgTable(
   },
   (t) => ({
     userOccurredIdx: index("transactions_user_occurred_idx").on(t.userId, t.occurredAt),
+    userTypeOccurredIdx: index("transactions_user_type_occurred_idx").on(
+      t.userId,
+      t.type,
+      t.occurredAt,
+    ),
+    accountOccurredIdx: index("transactions_account_occurred_idx").on(t.accountId, t.occurredAt),
+    statementMonthIdx: index("transactions_user_stmt_idx").on(t.userId, t.statementMonth),
   }),
+);
+
+export const attachments = pgTable(
+  "attachments",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    transactionId: uuid("transaction_id").references(() => transactions.id, {
+      onDelete: "set null",
+    }),
+    filename: text("filename").notNull(),
+    fileKey: text("file_key").notNull(),
+    contentType: text("content_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    note: text("note"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    userTxIdx: index("attachments_user_tx_idx").on(t.userId, t.transactionId),
+  }),
+);
+
+export const quickButtons = pgTable(
+  "quick_buttons",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    icon: text("icon").default("⚡"),
+    type: text("type").notNull().default("expense").$type<(typeof TRANSACTION_TYPES)[number]>(),
+    categoryId: uuid("category_id").references(() => categories.id, { onDelete: "set null" }),
+    accountId: uuid("account_id").references(() => accounts.id, { onDelete: "set null" }),
+    defaultAmountMinor: bigint("default_amount_minor", { mode: "bigint" }),
+    matchPattern: text("match_pattern"),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    userSortIdx: index("quick_buttons_user_sort_idx").on(t.userId, t.sortOrder),
+  }),
+);
+
+export const annualBudgets = pgTable(
+  "annual_budgets",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    year: integer("year").notNull().default(2026),
+    name: text("name").notNull(),
+    icon: text("icon").default("⚡"),
+    annualAmountMinor: bigint("annual_amount_minor", { mode: "bigint" }).notNull(),
+    allocationType: text("allocation_type").notNull().default("rolling"),
+    targetMonths: text("target_months"),
+    accountId: uuid("account_id").references(() => accounts.id, { onDelete: "set null" }),
+    categoryId: uuid("category_id").references(() => categories.id, { onDelete: "set null" }),
+    matchPattern: text("match_pattern"),
+    note: text("note"),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    userYearIdx: index("annual_budgets_user_year_idx").on(t.userId, t.year),
+  }),
+);
+
+export const taxEstimates = pgTable(
+  "tax_estimates",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    year: integer("year").notNull().default(2026),
+    grossIncomeMinor: bigint("gross_income_minor", { mode: "bigint" }).notNull().default(sql`0`),
+    bonusIncomeMinor: bigint("bonus_income_minor", { mode: "bigint" }).notNull().default(sql`0`),
+    stockGsuIncomeMinor: bigint("stock_gsu_income_minor", { mode: "bigint" }).notNull().default(sql`0`),
+    otherIncomeMinor: bigint("other_income_minor", { mode: "bigint" }).notNull().default(sql`0`),
+    dependentsCount: integer("dependents_count").notNull().default(4),
+    marriedFilingJointly: boolean("married_filing_jointly").notNull().default(true),
+    youngChildrenCount: integer("young_children_count").notNull().default(1),
+    withheldTaxMinor: bigint("withheld_tax_minor", { mode: "bigint" }).notNull().default(sql`0`),
+    calculatedTaxMinor: bigint("calculated_tax_minor", { mode: "bigint" }).notNull().default(sql`0`),
+    taxDueMinor: bigint("tax_due_minor", { mode: "bigint" }).notNull().default(sql`0`),
+    installmentCount: integer("installment_count").notNull().default(3),
+    installmentStartMonth: integer("installment_start_month").notNull().default(5),
+    accountId: uuid("account_id").references(() => accounts.id, { onDelete: "set null" }),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    userYearIdx: unique("tax_estimates_user_year_unique").on(t.userId, t.year),
+  }),
+);
+
+export const dcaSchedules = pgTable(
+  "dca_schedules",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    accountId: uuid("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    brokerAccountId: uuid("broker_account_id").references(() => accounts.id, {
+      onDelete: "set null",
+    }),
+    symbol: text("symbol").notNull(),
+    market: text("market").notNull().$type<(typeof MARKETS)[number]>(),
+    amountMinor: bigint("amount_minor", { mode: "bigint" }).notNull(),
+    currency: char("currency", { length: 3 }).notNull().default("TWD"),
+    dayOfMonth: integer("day_of_month").notNull().default(6),
+    nextRunDate: date("next_run_date").notNull(),
+    active: boolean("active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    userIdx: index("dca_schedules_user_idx").on(t.userId),
+  })
 );
 
 export const instruments = pgTable(
@@ -553,6 +779,9 @@ export const loanLedgerEntries = pgTable(
     currency: char("currency", { length: 3 }).notNull(),
     occurredAt: date("occurred_at").notNull(),
     note: text("note"),
+    transactionId: uuid("transaction_id").references(() => transactions.id, {
+      onDelete: "set null",
+    }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
@@ -581,7 +810,9 @@ export const fxRates = pgTable(
 
 export type User = typeof user.$inferSelect;
 export type Account = typeof accounts.$inferSelect;
+export type FinancialAccount = typeof accounts.$inferSelect;
 export type NewAccount = typeof accounts.$inferInsert;
+export type NewFinancialAccount = typeof accounts.$inferInsert;
 export type Category = typeof categories.$inferSelect;
 export type NewCategory = typeof categories.$inferInsert;
 export type Transaction = typeof transactions.$inferSelect;
@@ -594,6 +825,7 @@ export type RsuGrant = typeof rsuGrants.$inferSelect;
 export type RsuVest = typeof rsuVests.$inferSelect;
 export type LoanPaymentSchedule = typeof loanPaymentSchedules.$inferSelect;
 export type LoanPaymentTier = typeof loanPaymentTiers.$inferSelect;
+export type LoanRateAdjustment = typeof loanRateAdjustments.$inferSelect;
 export type InstallmentSchedule = typeof installmentSchedules.$inferSelect;
 export type ForecastSettings = typeof forecastSettings.$inferSelect;
 export type MonthlyForecast = typeof monthlyForecasts.$inferSelect;
@@ -606,3 +838,12 @@ export type LoanLedgerEntry = typeof loanLedgerEntries.$inferSelect;
 export type JobRun = typeof jobRuns.$inferSelect;
 export type AuditLogEntry = typeof auditLog.$inferSelect;
 export type CategoryBudget = typeof categoryBudgets.$inferSelect;
+export type MonthConfirmation = typeof monthConfirmations.$inferSelect;
+export type Attachment = typeof attachments.$inferSelect;
+export type NewAttachment = typeof attachments.$inferInsert;
+export type QuickButton = typeof quickButtons.$inferSelect;
+export type NewQuickButton = typeof quickButtons.$inferInsert;
+export type AnnualBudget = typeof annualBudgets.$inferSelect;
+export type NewAnnualBudget = typeof annualBudgets.$inferInsert;
+export type TaxEstimate = typeof taxEstimates.$inferSelect;
+export type NewTaxEstimate = typeof taxEstimates.$inferInsert;

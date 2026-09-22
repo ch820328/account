@@ -24,18 +24,21 @@ import { netVestQuantity } from "./rsu";
 export interface ForecastMonthRow {
   month: string;
   livingExpenseMinor: bigint;
+  actualExpenseMinor?: bigint | null;
   isActual: boolean;
   scheduledIncomeMinor: bigint;
   scheduledExpenseMinor: bigint;
-  /** Market value of RSU shares vesting this month (added to net worth). */
+  /** Market value of RSU shares vesting this month. */
   rsuVestValueMinor: bigint;
   netCashflowMinor: bigint;
   projectedNetWorthMinor: bigint;
+  projectedCashMinor: bigint;
 }
 
 export interface AssetForecast {
   baseCurrency: string;
   currentNetWorthMinor: bigint;
+  currentCashMinor: bigint;
   defaultLivingExpenseMinor: bigint;
   horizonMonths: number;
   livingExpenseCategoryIds: string[];
@@ -90,7 +93,15 @@ interface LoanProjection {
 
 interface MonthlyScheduleContext {
   payrollIncome: bigint;
-  recurring: { kind: string; amountMinor: bigint; endMonth: string | null }[];
+  recurring: {
+    kind: string;
+    frequency: string;
+    interval: number;
+    startMonthKey: string;
+    triggerMonthNumber: number;
+    amountMinor: bigint;
+    endMonthKey: string | null;
+  }[];
   installments: { amountMinor: bigint; remaining: number | null }[];
   loans: LoanProjection[];
   /** RSU vest market value per month key (base currency minor units). */
@@ -144,13 +155,27 @@ async function buildScheduleContext(
     .from(recurringRules)
     .where(and(eq(recurringRules.userId, userId), eq(recurringRules.active, true)));
 
-  const recurring = rules
-    .filter((r) => r.frequency === "monthly")
-    .map((r) => ({
+  const recurring = rules.map((r) => {
+    const triggerDateStr = r.anchorDate || r.nextRunDate;
+    const startMonthKey = triggerDateStr ? triggerDateStr.slice(0, 7) : "2000-01";
+    let triggerMonthNumber = 1;
+    if (triggerDateStr) {
+      const parts = triggerDateStr.split("-");
+      if (parts.length >= 2) {
+        triggerMonthNumber = Number(parts[1]);
+      }
+    }
+
+    return {
       kind: r.kind,
+      frequency: r.frequency,
+      interval: r.interval || 1,
+      startMonthKey,
+      triggerMonthNumber,
       amountMinor: toBase(r.amountMinor, r.currency),
-      endMonth: r.endDate ? r.endDate.slice(0, 7) : null,
-    }));
+      endMonthKey: r.endDate ? r.endDate.slice(0, 7) : null,
+    };
+  });
 
   const installmentRows = await db
     .select()
@@ -304,7 +329,8 @@ export async function computeAssetForecast(
   const overrideByMonth = new Map(overrides.map((o) => [o.month.slice(0, 7), o]));
 
   const now = new Date();
-  let running = nw.totalMinor;
+  let runningCash = nw.cashAndBankMinor;
+  let runningNetWorth = nw.totalMinor;
   const months: ForecastMonthRow[] = [];
 
   for (let i = 0; i < settings.horizonMonths; i++) {
@@ -312,16 +338,53 @@ export async function computeAssetForecast(
     const key = formatMonthKey(d);
     const override = overrideByMonth.get(key);
 
-    const living = override?.livingExpenseMinor ?? settings.defaultLivingExpenseMinor;
+    const living = override?.isActual
+      ? (override?.actualExpenseMinor ?? 0n)
+      : (override?.livingExpenseMinor ?? settings.defaultLivingExpenseMinor);
     const isActual = override?.isActual ?? false;
 
     let income = ctx.payrollIncome;
     let expense = 0n;
 
     for (const r of ctx.recurring) {
-      if (r.endMonth && key > r.endMonth) continue;
-      if (r.kind === "income") income += r.amountMinor;
-      else expense += r.amountMinor;
+      if (r.endMonthKey && key > r.endMonthKey) continue;
+      if (key < r.startMonthKey) continue;
+
+      let triggersThisMonth = false;
+
+      if (r.frequency === "monthly") {
+        const [sY, sM] = r.startMonthKey.split("-").map(Number);
+        const [cY, cM] = key.split("-").map(Number);
+        const startY = sY ?? 0;
+        const startM = sM ?? 1;
+        const curY = cY ?? 0;
+        const curM = cM ?? 1;
+        const monthDiff = (curY - startY) * 12 + (curM - startM);
+        if (monthDiff >= 0 && monthDiff % r.interval === 0) {
+          triggersThisMonth = true;
+        }
+      } else if (r.frequency === "yearly") {
+        const [sY, sM] = r.startMonthKey.split("-").map(Number);
+        const [cY, cM] = key.split("-").map(Number);
+        const startY = sY ?? 0;
+        const curY = cY ?? 0;
+        const curM = cM ?? 1;
+        const yearDiff = curY - startY;
+        if (curM === r.triggerMonthNumber && yearDiff >= 0 && yearDiff % r.interval === 0) {
+          triggersThisMonth = true;
+        }
+      } else if (r.frequency === "weekly") {
+        if (r.kind === "income") income += r.amountMinor * 4n;
+        else expense += r.amountMinor * 4n;
+      } else if (r.frequency === "daily") {
+        if (r.kind === "income") income += r.amountMinor * 30n;
+        else expense += r.amountMinor * 30n;
+      }
+
+      if (triggersThisMonth) {
+        if (r.kind === "income") income += r.amountMinor;
+        else expense += r.amountMinor;
+      }
     }
     for (const inst of ctx.installments) {
       if (inst.remaining == null || i < inst.remaining) expense += inst.amountMinor;
@@ -333,23 +396,27 @@ export async function computeAssetForecast(
 
     const rsuVestValue = ctx.rsuVestByMonth.get(key) ?? 0n;
     const netCashflow = income - expense - living;
-    running += netCashflow + rsuVestValue;
+    runningCash += netCashflow;
+    runningNetWorth += netCashflow + rsuVestValue;
 
     months.push({
       month: key,
-      livingExpenseMinor: living,
+      livingExpenseMinor: override?.livingExpenseMinor ?? settings.defaultLivingExpenseMinor,
+      actualExpenseMinor: override?.actualExpenseMinor,
       isActual,
       scheduledIncomeMinor: income,
       scheduledExpenseMinor: expense,
       rsuVestValueMinor: rsuVestValue,
       netCashflowMinor: netCashflow,
-      projectedNetWorthMinor: running,
+      projectedNetWorthMinor: runningNetWorth,
+      projectedCashMinor: runningCash,
     });
   }
 
   return {
     baseCurrency: settings.currency,
     currentNetWorthMinor: nw.totalMinor,
+    currentCashMinor: nw.cashAndBankMinor,
     defaultLivingExpenseMinor: settings.defaultLivingExpenseMinor,
     horizonMonths: settings.horizonMonths,
     livingExpenseCategoryIds: [...(parseCategoryIds(settings.livingExpenseCategoryIds) ?? [])],
@@ -397,18 +464,27 @@ export async function syncLivingExpenseFromLedger(
   }
 
   const monthIsoDate = monthIso(start);
+  const [existing] = await db
+    .select()
+    .from(monthlyForecasts)
+    .where(and(eq(monthlyForecasts.userId, userId), eq(monthlyForecasts.month, monthIsoDate)))
+    .limit(1);
+
+  const estimate = existing ? existing.livingExpenseMinor : settings.defaultLivingExpenseMinor;
+
   await db
     .insert(monthlyForecasts)
     .values({
       userId,
       month: monthIsoDate,
-      livingExpenseMinor: living,
+      livingExpenseMinor: estimate,
+      actualExpenseMinor: living,
       isActual: true,
     })
     .onConflictDoUpdate({
       target: [monthlyForecasts.userId, monthlyForecasts.month],
       set: {
-        livingExpenseMinor: living,
+        actualExpenseMinor: living,
         isActual: true,
         updatedAt: new Date(),
       },

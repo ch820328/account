@@ -25,13 +25,23 @@ export const budgetsRouter = router({
     const actualById = await monthExpenseByCategoryId(ctx.db, ctx.user.id);
     const base = getBaseCurrency();
 
-    return cats.map((c) => ({
-      categoryId: c.id,
-      name: c.name,
-      currency: budgetByCat.get(c.id)?.currency ?? base,
-      budgetMinor: budgetByCat.get(c.id)?.amountMinor ?? null,
-      actualMinor: actualById.get(c.id) ?? 0n,
-    }));
+    const catMap = new Map(cats.map((c) => [c.id, c]));
+
+    return cats.map((c) => {
+      let displayName = c.name;
+      if (c.parentId) {
+        const parent = catMap.get(c.parentId);
+        if (parent) displayName = `${parent.name} · ${c.name}`;
+      }
+
+      return {
+        categoryId: c.id,
+        name: displayName,
+        currency: budgetByCat.get(c.id)?.currency ?? base,
+        budgetMinor: budgetByCat.get(c.id)?.amountMinor ?? null,
+        actualMinor: actualById.get(c.id) ?? 0n,
+      };
+    });
   }),
 
   set: protectedProcedure

@@ -18,6 +18,9 @@ export function EditableRow({
   onToggleActive,
   canEdit = true,
   finished = false,
+  canMoveUp = false,
+  canMoveDown = false,
+  onMove,
   children,
 }: {
   primary: ReactNode;
@@ -31,6 +34,9 @@ export function EditableRow({
   onToggleActive?: () => void;
   canEdit?: boolean;
   finished?: boolean;
+  canMoveUp?: boolean;
+  canMoveDown?: boolean;
+  onMove?: (dir: "up" | "down") => void;
   children?: ReactNode;
 }) {
   return (
@@ -42,6 +48,16 @@ export function EditableRow({
         </div>
         <div className="row-inline">
           {!editing && right}
+          {!editing && onMove && (
+            <>
+              <button type="button" className="btn ghost" onClick={() => onMove("up")} disabled={!canMoveUp} style={{ opacity: canMoveUp ? 1 : 0.3 }}>
+                ▲
+              </button>
+              <button type="button" className="btn ghost" onClick={() => onMove("down")} disabled={!canMoveDown} style={{ opacity: canMoveDown ? 1 : 0.3 }}>
+                ▼
+              </button>
+            </>
+          )}
           {canEdit && (
             <button type="button" className="btn ghost" onClick={() => (editing ? onClose() : onEdit())}>
               {editing ? "收合" : "編輯"}

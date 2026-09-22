@@ -1,7 +1,7 @@
 import { CATEGORY_KINDS, categories, transactions } from "@acc/db";
 import { seedMissingDefaultCategories } from "@acc/core";
 import { TRPCError } from "@trpc/server";
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { protectedProcedure, router } from "../trpc";
 
@@ -12,7 +12,7 @@ export const categoriesRouter = router({
       const where = input?.kind
         ? and(eq(categories.userId, ctx.user.id), eq(categories.kind, input.kind))
         : eq(categories.userId, ctx.user.id);
-      return ctx.db.select().from(categories).where(where).orderBy(categories.name);
+      return ctx.db.select().from(categories).where(where).orderBy(asc(categories.sortOrder), asc(categories.name));
     }),
 
   create: protectedProcedure
@@ -45,17 +45,71 @@ export const categoriesRouter = router({
     .input(
       z.object({
         id: z.string().uuid(),
-        name: z.string().min(1).max(80),
+        name: z.string().min(1).max(80).optional(),
+        parentId: z.string().uuid().nullable().optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      const setData: Record<string, any> = {};
+      if (input.name !== undefined) setData.name = input.name;
+      if (input.parentId !== undefined) setData.parentId = input.parentId;
+
       const [updated] = await ctx.db
         .update(categories)
-        .set({ name: input.name })
+        .set(setData)
         .where(and(eq(categories.id, input.id), eq(categories.userId, ctx.user.id)))
         .returning();
       if (!updated) throw new TRPCError({ code: "NOT_FOUND", message: "找不到分類" });
       return updated;
+    }),
+
+  updateSort: protectedProcedure
+    .input(
+      z.array(
+        z.object({
+          id: z.string().uuid(),
+          sortOrder: z.number().int(),
+        })
+      )
+    )
+    .mutation(async ({ ctx, input }) => {
+      // Execute in a transaction since it's a batch update
+      await ctx.db.transaction(async (tx) => {
+        for (const item of input) {
+          await tx
+            .update(categories)
+            .set({ sortOrder: item.sortOrder })
+            .where(and(eq(categories.id, item.id), eq(categories.userId, ctx.user.id)));
+        }
+      });
+      return { success: true };
+    }),
+
+  batchSaveTree: protectedProcedure
+    .input(
+      z.array(
+        z.object({
+          id: z.string().uuid(),
+          name: z.string().min(1).max(80),
+          parentId: z.string().uuid().nullable(),
+          sortOrder: z.number().int(),
+        })
+      )
+    )
+    .mutation(async ({ ctx, input }) => {
+      await ctx.db.transaction(async (tx) => {
+        for (const item of input) {
+          await tx
+            .update(categories)
+            .set({
+              name: item.name,
+              parentId: item.parentId,
+              sortOrder: item.sortOrder,
+            })
+            .where(and(eq(categories.id, item.id), eq(categories.userId, ctx.user.id)));
+        }
+      });
+      return { success: true };
     }),
 
   delete: protectedProcedure

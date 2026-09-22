@@ -1,6 +1,7 @@
 "use client";
 
 import { signOut, useSession } from "@/lib/auth-client";
+import { trpc } from "@/lib/trpc";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
@@ -8,14 +9,16 @@ import { useEffect, useRef, useState } from "react";
 export function TopBar() {
   const { data: session } = useSession();
   const router = useRouter();
-  const [moreOpen, setMoreOpen] = useState(false);
   const [gearOpen, setGearOpen] = useState(false);
-  const moreRef = useRef<HTMLDivElement>(null);
   const gearRef = useRef<HTMLDivElement>(null);
+
+  const fxQuery = trpc.accounts.activeFxRates.useQuery(undefined, {
+    enabled: !!session?.user,
+    staleTime: 60 * 60 * 1000,
+  });
 
   useEffect(() => {
     function onClick(e: MouseEvent) {
-      if (moreRef.current && !moreRef.current.contains(e.target as Node)) setMoreOpen(false);
       if (gearRef.current && !gearRef.current.contains(e.target as Node)) setGearOpen(false);
     }
     document.addEventListener("mousedown", onClick);
@@ -24,47 +27,30 @@ export function TopBar() {
 
   return (
     <div className="topbar">
-      <Link href="/" className="brand">
-        記帳
-      </Link>
+      <div style={{ display: "flex", alignItems: "center", gap: "14px", minWidth: 0, flexWrap: "wrap" }}>
+        <Link href="/" className="brand">
+          記帳
+        </Link>
+        {session?.user && fxQuery.data && fxQuery.data.rates.length > 0 && (
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", fontSize: "11px", color: "var(--muted)", background: "rgba(255, 255, 255, 0.03)", padding: "4px 10px", borderRadius: "8px", border: "1px solid rgba(255,255,255,0.04)", alignItems: "center" }}>
+            <span style={{ fontWeight: 600 }}>匯率：</span>
+            {fxQuery.data.rates.map((r) => (
+              <span key={r.currency} className="number-mono" style={{ paddingRight: "4px" }}>
+                {r.currency}/{fxQuery.data.base}: {r.rate.toFixed(4)}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
       <div className="nav">
         <Link href="/">首頁</Link>
-        <Link href="/entry">記錄</Link>
         <Link href="/transactions">交易</Link>
+        <Link href="/budgets">預算</Link>
         <Link href="/schedule">排程</Link>
         <Link href="/accounts">帳戶</Link>
-        <div className="nav-dropdown" ref={moreRef}>
-          <button
-            type="button"
-            className="nav-dropdown-trigger"
-            onClick={() => {
-              setMoreOpen((v) => !v);
-              setGearOpen(false);
-            }}
-            aria-expanded={moreOpen}
-          >
-            更多 ▾
-          </button>
-          {moreOpen && (
-            <div className="nav-dropdown-menu">
-              <Link href="/forecast" onClick={() => setMoreOpen(false)}>
-                資產預估
-              </Link>
-              <Link href="/net-worth" onClick={() => setMoreOpen(false)}>
-                淨資產
-              </Link>
-              <Link href="/reports" onClick={() => setMoreOpen(false)}>
-                報表
-              </Link>
-              <Link href="/holdings" onClick={() => setMoreOpen(false)}>
-                投資持倉
-              </Link>
-              <Link href="/lending" onClick={() => setMoreOpen(false)}>
-                借款
-              </Link>
-            </div>
-          )}
-        </div>
+        <Link href="/reports">報表</Link>
+        <Link href="/lending">借貸</Link>
+        <Link href="/attachments">單據</Link>
 
         <div className="nav-dropdown" ref={gearRef}>
           <button
@@ -72,7 +58,6 @@ export function TopBar() {
             className="gear-trigger"
             onClick={() => {
               setGearOpen((v) => !v);
-              setMoreOpen(false);
             }}
             aria-label="設定"
             aria-expanded={gearOpen}

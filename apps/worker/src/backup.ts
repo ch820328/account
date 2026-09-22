@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createGzip } from "node:zlib";
+import { createCipheriv, randomBytes, scryptSync } from "node:crypto";
 import { PassThrough } from "node:stream";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
@@ -18,8 +19,35 @@ function r2Endpoint(): string {
 }
 
 /**
- * Dump the Postgres database, gzip it, and upload to Cloudflare R2.
- * Skips silently if R2 is not configured. Returns the object key on success.
+ * Encrypts a buffer using AES-256-GCM with a key derived from the passphrase.
+ *
+ * Output format (all bytes concatenated):
+ *   [16 bytes salt][12 bytes IV][N bytes ciphertext][16 bytes GCM auth tag]
+ *
+ * To decrypt manually:
+ *   openssl enc -d -aes-256-gcm ... (or use Node.js crypto.createDecipheriv)
+ */
+function encryptBuffer(buffer: Buffer, passphrase: string): Buffer {
+  const salt = randomBytes(16);
+  const iv = randomBytes(12);
+  // Derive a 32-byte key from the passphrase using scrypt (memory-hard KDF)
+  const key = scryptSync(passphrase, salt, 32);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([cipher.update(buffer), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+  return Buffer.concat([salt, iv, encrypted, authTag]);
+}
+
+/**
+ * Dump the Postgres database, gzip it, optionally encrypt it, and upload to
+ * Cloudflare R2. Skips silently if R2 is not configured.
+ *
+ * Encryption:
+ *   Set BACKUP_ENCRYPT_PASSPHRASE in .env to enable AES-256-GCM encryption.
+ *   The backup file will have a .enc suffix when encrypted.
+ *   Keep the passphrase safe — without it, the backup cannot be decrypted.
+ *
+ * Returns the R2 object key on success, null if R2 is not configured.
  */
 export async function backupDatabaseToR2(): Promise<string | null> {
   if (!isR2Configured()) return null;
@@ -27,8 +55,10 @@ export async function backupDatabaseToR2(): Promise<string | null> {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) throw new Error("DATABASE_URL not set");
 
+  const passphrase = process.env.BACKUP_ENCRYPT_PASSPHRASE;
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const key = `backups/accounting-${stamp}.sql.gz`;
+  const ext = passphrase ? "sql.gz.enc" : "sql.gz";
+  const key = `backups/accounting-${stamp}.${ext}`;
 
   const dump = spawn("pg_dump", ["--no-owner", "--no-privileges", databaseUrl], {
     stdio: ["ignore", "pipe", "pipe"],
@@ -65,14 +95,17 @@ export async function backupDatabaseToR2(): Promise<string | null> {
     body.on("error", reject);
   });
 
-  const [, buffer] = await Promise.all([dumpDone, collected]);
+  const [, rawBuffer] = await Promise.all([dumpDone, collected]);
+
+  // Optionally encrypt before upload
+  const uploadBuffer = passphrase ? encryptBuffer(rawBuffer, passphrase) : rawBuffer;
 
   await s3.send(
     new PutObjectCommand({
       Bucket: process.env.R2_BUCKET!,
       Key: key,
-      Body: buffer,
-      ContentType: "application/gzip",
+      Body: uploadBuffer,
+      ContentType: passphrase ? "application/octet-stream" : "application/gzip",
     }),
   );
 

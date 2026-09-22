@@ -1,0 +1,1 @@
+ALTER TABLE "accounts" ADD COLUMN "balance_updated_at" timestamp with time zone DEFAULT now() NOT NULL;

@@ -13,6 +13,10 @@ import { rsuRouter } from "./rsu";
 import { recurringRouter } from "./recurring";
 import { securityRouter } from "./security";
 import { transactionsRouter } from "./transactions";
+import { dcaRouter } from "./dca";
+import { attachmentsRouter } from "./attachments";
+import { quickButtonsRouter } from "./quick-buttons";
+import { annualBudgetsRouter } from "./annual-budgets";
 
 export const appRouter = router({
   accounts: accountsRouter,
@@ -29,6 +33,10 @@ export const appRouter = router({
   rsu: rsuRouter,
   security: securityRouter,
   transactions: transactionsRouter,
+  dca: dcaRouter,
+  attachments: attachmentsRouter,
+  quickButtons: quickButtonsRouter,
+  annualBudgets: annualBudgetsRouter,
 });
 
 export type AppRouter = typeof appRouter;

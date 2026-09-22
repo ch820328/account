@@ -23,6 +23,7 @@ COPY . .
 ARG NEXT_PUBLIC_APP_URL=http://localhost:3000
 # A syntactically valid URL is enough for `next build` (no DB connection is made).
 ENV DATABASE_URL="postgresql://build:build@localhost:5432/build"
+ENV BETTER_AUTH_SECRET="build-secret-build-secret-build-secret-1234"
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NEXT_PUBLIC_APP_URL=$NEXT_PUBLIC_APP_URL
 RUN pnpm --filter @acc/web build

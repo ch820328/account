@@ -95,7 +95,7 @@ export async function generateDueRecurringTransactions(
   const due = await db
     .select()
     .from(recurringRules)
-    .where(and(eq(recurringRules.active, true), lte(recurringRules.nextRunDate, asOf)));
+    .where(and(eq(recurringRules.active, true), eq(recurringRules.autoCommit, true), lte(recurringRules.nextRunDate, asOf)));
 
   let created = 0;
 

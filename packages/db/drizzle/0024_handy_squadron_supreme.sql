@@ -1,0 +1,1 @@
+ALTER TABLE "loan_rate_adjustments" ADD COLUMN "to_period" integer;

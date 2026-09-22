@@ -1,0 +1,1 @@
+ALTER TABLE "accounts" ADD COLUMN "exclude_from_net_worth" boolean DEFAULT false NOT NULL;

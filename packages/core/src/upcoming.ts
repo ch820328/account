@@ -1,8 +1,10 @@
 import {
   type Database,
+  forecastSettings,
   installmentSchedules,
   loanPaymentSchedules,
   loanPaymentTiers,
+  loanRateAdjustments,
   payrollLines,
   payrollProfiles,
   recurringRules,
@@ -10,7 +12,8 @@ import {
   rsuVests,
 } from "@acc/db";
 import { and, asc, eq, inArray, lte } from "drizzle-orm";
-import { amountForPeriod } from "./loan-payments";
+import { amountForPeriod, calculateNextLoanPaymentAmount } from "./loan-payments";
+import { getAccountBalances } from "./balances";
 import { sumPayrollLines } from "./payroll";
 import { todayIsoDate } from "./sync";
 
@@ -23,12 +26,61 @@ export interface UpcomingItem {
   amountMinor: bigint;
   currency: string;
   note?: string;
+  sourceAccountId?: string;
+  transferAccountId?: string;
+  categoryId?: string;
+  ruleId?: string;
+  autoCommit?: boolean;
+  paid?: boolean;
+}
+
+function formatIsoDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 function addDaysIso(iso: string, days: number): string {
   const d = new Date(`${iso}T00:00:00`);
   d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10);
+  return formatIsoDate(d);
+}
+
+function computeNextDateIso(
+  currentIso: string,
+  frequency: string,
+  interval = 1,
+  targetDayOfMonth?: number | null
+): string {
+  if (!currentIso || currentIso.length < 10) return "9999-12-31";
+  const d = new Date(`${currentIso}T00:00:00`);
+  if (isNaN(d.getTime())) return "9999-12-31";
+
+  const safeInterval = Math.max(1, interval || 1);
+
+  if (frequency === "yearly") {
+    d.setFullYear(d.getFullYear() + safeInterval);
+  } else if (frequency === "monthly") {
+    const targetDay = targetDayOfMonth ?? d.getDate();
+    d.setMonth(d.getMonth() + safeInterval, 1);
+    const daysInMonth = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+    d.setDate(Math.min(targetDay, daysInMonth));
+  } else if (frequency === "weekly") {
+    d.setDate(d.getDate() + 7 * safeInterval);
+  } else if (frequency === "daily") {
+    d.setDate(d.getDate() + safeInterval);
+  } else {
+    d.setMonth(d.getMonth() + 1);
+  }
+
+  const result = formatIsoDate(d);
+  if (result <= currentIso) {
+    const fallback = new Date(`${currentIso}T00:00:00`);
+    fallback.setDate(fallback.getDate() + 1);
+    return formatIsoDate(fallback);
+  }
+  return result;
 }
 
 /** Next occurrence of each active schedule within the next `days` days. */
@@ -46,14 +98,22 @@ export async function upcomingScheduled(
     .from(recurringRules)
     .where(and(eq(recurringRules.userId, userId), eq(recurringRules.active, true)));
   for (const r of rules) {
-    if (r.nextRunDate <= end) {
+    let curDate = r.nextRunDate;
+    while (curDate <= end) {
+      if (r.endDate && curDate > r.endDate) break;
       items.push({
-        date: r.nextRunDate,
+        date: curDate,
         name: r.name,
         kind: r.kind,
         amountMinor: r.amountMinor,
         currency: r.currency,
+        sourceAccountId: (r.kind === "expense" || r.kind === "transfer") ? r.accountId : undefined,
+        transferAccountId: r.transferAccountId || undefined,
+        categoryId: r.categoryId || undefined,
+        ruleId: r.id,
+        autoCommit: r.autoCommit,
       });
+      curDate = computeNextDateIso(curDate, r.frequency, r.interval || 1, r.dayOfMonth);
     }
   }
 
@@ -73,14 +133,16 @@ export async function upcomingScheduled(
       else byProfile.set(l.profileId, [l]);
     }
     for (const p of profiles) {
-      if (p.nextRunDate <= end) {
+      let curDate = p.nextRunDate;
+      while (curDate <= end) {
         items.push({
-          date: p.nextRunDate,
+          date: curDate,
           name: p.name,
           kind: "income",
           amountMinor: sumPayrollLines(byProfile.get(p.id) ?? []).netMinor,
           currency: p.currency,
         });
+        curDate = computeNextDateIso(curDate, "monthly", 1, p.dayOfMonth);
       }
     }
   }
@@ -90,14 +152,22 @@ export async function upcomingScheduled(
     .from(installmentSchedules)
     .where(and(eq(installmentSchedules.userId, userId), eq(installmentSchedules.active, true)));
   for (const i of installments) {
-    if (i.nextRunDate <= end) {
+    let curDate = i.nextRunDate;
+    let completed = i.completedPeriods;
+    const total = i.totalPeriods;
+    while (curDate <= end) {
+      if (total != null && completed >= total) break;
       items.push({
-        date: i.nextRunDate,
+        date: curDate,
         name: i.name,
         kind: "expense",
         amountMinor: i.amountMinor,
         currency: i.currency,
+        sourceAccountId: i.accountId,
+        categoryId: i.categoryId || undefined,
       });
+      completed++;
+      curDate = computeNextDateIso(curDate, "monthly", 1, i.dayOfMonth);
     }
   }
 
@@ -116,21 +186,56 @@ export async function upcomingScheduled(
       if (list) list.push(t);
       else tiersBySchedule.set(t.scheduleId, [t]);
     }
+    
+    const adjustmentRows = await db
+      .select()
+      .from(loanRateAdjustments)
+      .where(inArray(loanRateAdjustments.scheduleId, loans.map((l) => l.id)));
+    const adjustmentsBySchedule = new Map<string, typeof adjustmentRows>();
+    for (const a of adjustmentRows) {
+      const list = adjustmentsBySchedule.get(a.scheduleId);
+      if (list) list.push(a);
+      else adjustmentsBySchedule.set(a.scheduleId, [a]);
+    }
+
+    const [settings] = await db
+      .select({ loanBaseRate: forecastSettings.loanBaseRate })
+      .from(forecastSettings)
+      .where(eq(forecastSettings.userId, userId))
+      .limit(1);
+    const baseRate = Number(settings?.loanBaseRate ?? "1.85");
+
+    const balances = await getAccountBalances(db, userId);
+
     for (const l of loans) {
-      if (l.nextRunDate <= end) {
-        const tiers = (tiersBySchedule.get(l.id) ?? []).map((t) => ({
-          fromPeriod: t.fromPeriod,
-          toPeriod: t.toPeriod,
-          amountMinor: t.amountMinor,
-        }));
+      let curDate = l.nextRunDate;
+      let completed = l.completedPeriods;
+      const total = l.totalPeriods;
+      const tiers = (tiersBySchedule.get(l.id) ?? []).map((t) => ({
+        fromPeriod: t.fromPeriod,
+        toPeriod: t.toPeriod,
+        amountMinor: t.amountMinor,
+        rateMargin: t.rateMargin,
+        isGracePeriod: t.isGracePeriod,
+      }));
+      
+      const adjustments = adjustmentsBySchedule.get(l.id) ?? [];
+      const acctBalance = balances.find(b => b.accountId === l.liabilityAccountId);
+      const currentOwed = acctBalance ? (acctBalance.balanceMinor * -1n) : 0n;
+
+      while (curDate <= end) {
+        if (total != null && completed >= total) break;
         items.push({
-          date: l.nextRunDate,
+          date: curDate,
           name: l.name,
-          kind: "transfer",
-          amountMinor: amountForPeriod(l.completedPeriods + 1, tiers, l.amountMinor),
+          kind: "expense",
+          amountMinor: calculateNextLoanPaymentAmount(l, tiers, adjustments, currentOwed, baseRate, completed + 1),
           currency: l.currency,
           note: "貸款還款",
+          sourceAccountId: l.sourceAccountId,
         });
+        completed++;
+        curDate = computeNextDateIso(curDate, "monthly", 1, l.dayOfMonth);
       }
     }
   }
@@ -141,6 +246,9 @@ export async function upcomingScheduled(
       quantity: rsuVests.quantity,
       name: rsuGrants.name,
       symbol: rsuGrants.symbol,
+      market: rsuGrants.market,
+      estimatedPrice: rsuGrants.estimatedPrice,
+      brokerAccountId: rsuGrants.brokerAccountId,
     })
     .from(rsuVests)
     .innerJoin(rsuGrants, eq(rsuVests.grantId, rsuGrants.id))
@@ -158,13 +266,18 @@ export async function upcomingScheduled(
   for (const v of vests) {
     if (seenGrant.has(v.name)) continue;
     seenGrant.add(v.name);
+    const price = Number(v.estimatedPrice ?? 0);
+    const qty = Number(v.quantity ?? 0);
+    const amountMinor = BigInt(Math.round(price * qty * 100));
+    const curr = v.market === "TW" ? "TWD" : "USD";
     items.push({
       date: v.vestDate,
       name: `${v.name}（${v.symbol}）`,
       kind: "rsu",
-      amountMinor: 0n,
-      currency: "",
-      note: `${v.quantity} 股`,
+      amountMinor,
+      currency: curr,
+      sourceAccountId: v.brokerAccountId ?? undefined,
+      note: price > 0 ? `${v.quantity} 股（預估 $${price}/股）` : `${v.quantity} 股`,
     });
   }
 

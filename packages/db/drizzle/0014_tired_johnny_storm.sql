@@ -1,0 +1,1 @@
+ALTER TABLE "accounts" ADD COLUMN "parent_id" uuid;

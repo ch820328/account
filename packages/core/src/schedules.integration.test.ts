@@ -9,6 +9,7 @@ import {
   payrollProfiles,
   transactions,
   user,
+  forecastSettings,
 } from "@acc/db";
 import { eq } from "drizzle-orm";
 import { generateDueInstallments } from "./installments";
@@ -137,6 +138,127 @@ describe.skipIf(!RUN)("schedule generators (integration)", () => {
         .where(eq(transactions.userId, uid));
       const amounts = txs.map((t) => t.amountMinor).sort((a, b) => (a < b ? -1 : 1));
       expect(amounts).toEqual([1500000n, 2800000n, 2800000n]);
+    } finally {
+      await db.delete(user).where(eq(user.id, uid));
+    }
+  });
+
+  it("loan calculates equal_principal_interest amortization dynamically", async () => {
+    const uid = await makeUser("loan-amort");
+    try {
+      // Set base rate in forecast settings
+      await db.insert(forecastSettings).values({
+        userId: uid,
+        loanBaseRate: "1.85",
+        currency: "TWD",
+      });
+
+      const [liab] = await db
+        .insert(accounts)
+        .values({ userId: uid, name: "房貸", type: "loan", currency: "TWD", openingBalanceMinor: 800000000n })
+        .returning();
+      const [src] = await db
+        .insert(accounts)
+        .values({ userId: uid, name: "Bank", type: "bank", currency: "TWD" })
+        .returning();
+      const [sched] = await db
+        .insert(loanPaymentSchedules)
+        .values({
+          userId: uid,
+          name: "新青安機動",
+          liabilityAccountId: liab!.id,
+          sourceAccountId: src!.id,
+          amountMinor: 0n,
+          currency: "TWD",
+          dayOfMonth: 1,
+          nextRunDate: "2020-01-01",
+          totalPeriods: 240,
+          amortizationMethod: "equal_principal_interest",
+          rateMargin: "0.35", // Total rate = 1.85 + 0.35 = 2.20%
+        })
+        .returning();
+
+      const res = await generateDueLoanPayments(db, "2020-01-02");
+      expect(res.created).toBe(1); // 1 period generated
+
+      const txs = await db
+        .select()
+        .from(transactions)
+        .where(eq(transactions.userId, uid));
+
+      const transferTx = txs.find((t) => t.type === "transfer");
+      const interestTx = txs.find((t) => t.type === "expense");
+
+      expect(transferTx).toBeDefined();
+      expect(interestTx).toBeDefined();
+
+      // Math verification:
+      // P = 800,000,000 cents. R = 2.2% = 0.022. monthly r = 0.022 / 12. N = 240.
+      // interest = P * r = 800,000,000 * 0.022 / 12 = 1,466,666.66... => 1466667 cents
+      // PMT = P * r * (1+r)^N / ((1+r)^N - 1) => 4,123,278 cents
+      expect(Number(transferTx!.amountMinor)).toBe(4123278);
+      expect(Number(interestTx!.amountMinor)).toBe(1466667);
+    } finally {
+      await db.delete(user).where(eq(user.id, uid));
+    }
+  });
+
+  it("loan calculates equal_principal amortization dynamically", async () => {
+    const uid = await makeUser("loan-eqpr");
+    try {
+      // Set base rate in forecast settings
+      await db.insert(forecastSettings).values({
+        userId: uid,
+        loanBaseRate: "1.85",
+        currency: "TWD",
+      });
+
+      const [liab] = await db
+        .insert(accounts)
+        .values({ userId: uid, name: "房貸", type: "loan", currency: "TWD", openingBalanceMinor: 800000000n })
+        .returning();
+      const [src] = await db
+        .insert(accounts)
+        .values({ userId: uid, name: "Bank", type: "bank", currency: "TWD" })
+        .returning();
+      const [sched] = await db
+        .insert(loanPaymentSchedules)
+        .values({
+          userId: uid,
+          name: "新青安等額本金",
+          liabilityAccountId: liab!.id,
+          sourceAccountId: src!.id,
+          amountMinor: 0n,
+          currency: "TWD",
+          dayOfMonth: 1,
+          nextRunDate: "2020-01-01",
+          totalPeriods: 240,
+          amortizationMethod: "equal_principal",
+          rateMargin: "0.35", // Total rate = 1.85 + 0.35 = 2.20%
+        })
+        .returning();
+
+      const res = await generateDueLoanPayments(db, "2020-01-02");
+      expect(res.created).toBe(1); // 1 period generated
+
+      const txs = await db
+        .select()
+        .from(transactions)
+        .where(eq(transactions.userId, uid));
+
+      const transferTx = txs.find((t) => t.type === "transfer");
+      const interestTx = txs.find((t) => t.type === "expense");
+
+      expect(transferTx).toBeDefined();
+      expect(interestTx).toBeDefined();
+
+      // Math verification:
+      // P = 800,000,000 cents. R = 2.2% = 0.022. monthly r = 0.022 / 12. N = 240.
+      // principal portion = P / N = 800,000,000 / 240 = 3,333,333 cents
+      // interest portion = P * r = 800,000,000 * 0.022 / 12 = 1,466,667 cents
+      // PMT = principal portion + interest portion = 3333333 + 1466667 = 4800000 cents
+      expect(Number(transferTx!.amountMinor)).toBe(4800000);
+      expect(Number(interestTx!.amountMinor)).toBe(1466667);
     } finally {
       await db.delete(user).where(eq(user.id, uid));
     }

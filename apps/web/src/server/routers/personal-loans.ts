@@ -1,4 +1,4 @@
-import { LOAN_LEDGER_KINDS, forecastSettings, loanLedgerEntries } from "@acc/db";
+import { LOAN_LEDGER_KINDS, forecastSettings, loanLedgerEntries, transactions } from "@acc/db";
 import { signedLedgerAmount, updateForecastSettings } from "@acc/core";
 import { fromDecimal } from "@acc/money";
 import { TRPCError } from "@trpc/server";
@@ -74,23 +74,105 @@ export const personalLoansRouter = router({
         currency: z.string().length(3).default("TWD"),
         occurredAt: isoDate,
         note: z.string().max(500).optional(),
+        accountId: z.string().uuid().optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
       const currency = input.currency.toUpperCase();
+      const amountMinor = fromDecimal(input.amount, currency).amount;
+
+      let transactionId: string | undefined = undefined;
+
+      if (input.accountId) {
+        // Create transaction linked to the account
+        const type = (input.kind === "lend" || input.kind === "repay") ? "expense" : "income";
+        
+        const [tx] = await ctx.db
+          .insert(transactions)
+          .values({
+            userId: ctx.user.id,
+            accountId: input.accountId,
+            type,
+            amountMinor,
+            currency,
+            occurredAt: new Date(input.occurredAt),
+            note: input.note || `借款紀錄 - ${input.counterparty}`,
+            source: "loan",
+          })
+          .returning({ id: transactions.id });
+        
+        transactionId = tx?.id;
+      }
+
       const [created] = await ctx.db
         .insert(loanLedgerEntries)
         .values({
           userId: ctx.user.id,
           counterparty: input.counterparty.trim(),
           kind: input.kind,
-          amountMinor: fromDecimal(input.amount, currency).amount,
+          amountMinor,
           currency,
           occurredAt: input.occurredAt,
           note: input.note,
+          transactionId,
         })
         .returning();
       return created;
+    }),
+
+  update: protectedProcedure
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        counterparty: z.string().min(1).max(80),
+        kind: z.enum(LOAN_LEDGER_KINDS),
+        amount: decimal,
+        currency: z.string().length(3).default("TWD"),
+        occurredAt: isoDate,
+        note: z.string().max(500).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const currency = input.currency.toUpperCase();
+      const amountMinor = fromDecimal(input.amount, currency).amount;
+
+      const [existing] = await ctx.db
+        .select()
+        .from(loanLedgerEntries)
+        .where(
+          and(eq(loanLedgerEntries.id, input.id), eq(loanLedgerEntries.userId, ctx.user.id)),
+        );
+
+      if (!existing) throw new TRPCError({ code: "NOT_FOUND", message: "找不到紀錄" });
+
+      const [updated] = await ctx.db
+        .update(loanLedgerEntries)
+        .set({
+          counterparty: input.counterparty.trim(),
+          kind: input.kind,
+          amountMinor,
+          currency,
+          occurredAt: input.occurredAt,
+          note: input.note ?? null,
+        })
+        .where(eq(loanLedgerEntries.id, input.id))
+        .returning();
+
+      if (existing.transactionId) {
+        const type = (input.kind === "lend" || input.kind === "repay") ? "expense" : "income";
+        await ctx.db
+          .update(transactions)
+          .set({
+            amountMinor,
+            currency,
+            occurredAt: new Date(input.occurredAt),
+            note: input.note || `借款紀錄 - ${input.counterparty}`,
+            type,
+          })
+          .where(eq(transactions.id, existing.transactionId));
+      }
+
+      return updated;
     }),
 
   delete: protectedProcedure
@@ -103,6 +185,13 @@ export const personalLoansRouter = router({
         )
         .returning();
       if (!deleted) throw new TRPCError({ code: "NOT_FOUND", message: "找不到紀錄" });
+
+      if (deleted.transactionId) {
+        await ctx.db
+          .delete(transactions)
+          .where(and(eq(transactions.id, deleted.transactionId), eq(transactions.userId, ctx.user.id)));
+      }
+
       return deleted;
     }),
 

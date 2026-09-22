@@ -29,5 +29,24 @@ pnpm-debug.log*
 # db / backups
 *.sqlite
 *.sqlite3
+*.db
+*.sql
+!packages/db/drizzle/*.sql
+*.dump
+backup_data.json
 backups/
 pgdata/
+uploads/
+apps/web/uploads/
+
+# scratch
+scratch/
+raw_user_csv.txt
+todo.md
+firefly-iii/
+
+# IDE / agent metadata
+.cursor/
+.impeccable/
+.agents/
+.gemini/

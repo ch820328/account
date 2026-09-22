@@ -39,7 +39,7 @@ async function main() {
   }
 
   console.log(`Creating default admin (${adminUsername})…`);
-  const result = await auth.api.signUpEmail({
+  const result = await (auth.api.signUpEmail as any)({
     body: {
       email: internalEmail,
       username: adminUsername,

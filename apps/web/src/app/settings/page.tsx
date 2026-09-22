@@ -3,6 +3,7 @@
 import { TopBar } from "@/components/TopBar";
 import { authClient, useSession } from "@/lib/auth-client";
 import { trpc } from "@/lib/trpc";
+import { Skeleton, SkeletonList } from "@/components/Skeleton";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
@@ -40,7 +41,10 @@ export default function SettingsPage() {
     return (
       <>
         <TopBar />
-        <div className="container muted">載入中…</div>
+        <div className="container">
+          <Skeleton width={120} height={28} style={{ marginBottom: 20 }} />
+          <SkeletonList rows={3} />
+        </div>
       </>
     );
   }

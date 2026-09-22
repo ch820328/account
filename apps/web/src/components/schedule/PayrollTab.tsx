@@ -2,18 +2,20 @@
 
 import { Amount } from "@/components/Amount";
 import { EditableRow } from "@/components/schedule/EditableRow";
+import { AmountInput } from "@/components/AmountInput";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useMemo, useState } from "react";
+import { niceConfirm } from "@/lib/confirm";
 
 type LineDraft = { name: string; kind: "earning" | "deduction"; amount: string };
 
 const DEFAULT_LINES: LineDraft[] = [
-  { name: "基本薪資", kind: "earning", amount: "190000" },
-  { name: "伙食津貼(免稅)", kind: "earning", amount: "0" },
-  { name: "福利金", kind: "deduction", amount: "950" },
-  { name: "勞保費", kind: "deduction", amount: "1145" },
-  { name: "健保費", kind: "deduction", amount: "5646" },
-  { name: "所得稅預扣", kind: "deduction", amount: "9500" },
+  { name: "基本薪資", kind: "earning", amount: "" },
+  { name: "伙食津貼(免稅)", kind: "earning", amount: "" },
+  { name: "福利金", kind: "deduction", amount: "" },
+  { name: "勞保費", kind: "deduction", amount: "" },
+  { name: "健保費", kind: "deduction", amount: "" },
+  { name: "所得稅預扣", kind: "deduction", amount: "" },
 ];
 
 function parseAmount(s: string): number {
@@ -47,7 +49,7 @@ function PayrollForm({
   onSubmit,
   onCancel,
 }: {
-  accounts: { id: string; name: string }[];
+  accounts: { id: string; name: string; currency: string }[];
   initial: PayrollFormValues;
   submitLabel: string;
   pending: boolean;
@@ -71,11 +73,17 @@ function PayrollForm({
       onSubmit={(e) => {
         e.preventDefault();
         if (!depositAccountId) return;
+        const validLines = lines
+          .filter((l) => l.name.trim() && l.amount.trim() !== "")
+          .map((l) => ({ ...l, amount: l.amount.trim() }));
         onSubmit({
           name,
           depositAccountId,
           dayOfMonth: Number(dayOfMonth),
-          lines: lines.filter((l) => l.name.trim()),
+          lines:
+            validLines.length > 0
+              ? validLines
+              : lines.filter((l) => l.name.trim()).map((l) => ({ ...l, amount: l.amount.trim() || "0" })),
         });
       }}
     >
@@ -89,7 +97,7 @@ function PayrollForm({
           <select value={depositAccountId} onChange={(e) => setDepositAccountId(e.target.value)}>
             {accounts.map((a) => (
               <option key={a.id} value={a.id}>
-                {a.name}
+                {a.name} ({a.currency})
               </option>
             ))}
           </select>
@@ -125,7 +133,7 @@ function PayrollForm({
           <button
             type="button"
             className="btn ghost"
-            onClick={() => setLines((prev) => [...prev, { name: "", kind: "earning", amount: "0" }])}
+            onClick={() => setLines((prev) => [...prev, { name: "", kind: "earning", amount: "" }])}
           >
             + 收入
           </button>
@@ -148,7 +156,7 @@ function PayrollForm({
           <button
             type="button"
             className="btn ghost"
-            onClick={() => setLines((prev) => [...prev, { name: "", kind: "deduction", amount: "0" }])}
+            onClick={() => setLines((prev) => [...prev, { name: "", kind: "deduction", amount: "" }])}
           >
             + 扣款
           </button>
@@ -273,8 +281,9 @@ export function PayrollTab() {
                 setEditingId(p.id);
               }}
               onClose={() => setEditingId(null)}
-              onDelete={() => {
-                if (confirm(`刪除「${p.name}」？`)) remove.mutate({ id: p.id });
+              onDelete={async () => {
+                const ok = await niceConfirm("刪除薪資計畫", `確定要刪除「${p.name}」計畫嗎？`, "danger");
+                if (ok) remove.mutate({ id: p.id });
               }}
               active={p.active}
               onToggleActive={() => setActive.mutate({ id: p.id, active: !p.active })}
@@ -286,7 +295,7 @@ export function PayrollTab() {
               }
               secondary={
                 <>
-                  每月 {p.dayOfMonth} 日 · 下次 {p.nextRunDate} · 實領{" "}
+                  每月 · 下次 {p.nextRunDate?.slice(0, 7)} · 實領{" "}
                   <Amount value={p.totals.netMinor} currency={p.currency} kind="income" variant="inline" />
                   <span className="payroll-mini-table">
                     {p.lines.map((l) => (
@@ -352,11 +361,10 @@ function PayrollLineRow({
         value={line.name}
         onChange={(e) => onChange({ ...line, name: e.target.value })}
       />
-      <input
-        inputMode="decimal"
+      <AmountInput
         placeholder="0"
         value={line.amount}
-        onChange={(e) => onChange({ ...line, amount: e.target.value })}
+        onChange={(val) => onChange({ ...line, amount: val })}
       />
       <button type="button" className="btn ghost" onClick={onRemove}>
         ×

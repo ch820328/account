@@ -31,7 +31,7 @@ services:
     build:
       context: .
       dockerfile: apps/worker/Dockerfile
-    image: ${COMPOSE_PROJECT_NAME:-accounting}-worker
+    image: ${COMPOSE_PROJECT_NAME:-accounting}-migrate
     restart: "no"
     environment:
       <<: *db-url
@@ -70,6 +70,8 @@ services:
       SYNC_USER_ID: ${SYNC_USER_ID:-}
     ports:
       - "${WEB_PORT:-3000}:${WEB_INTERNAL_PORT:-3000}"
+    volumes:
+      - uploads_data:/app/uploads
     depends_on:
       db:
         condition: service_healthy
@@ -101,3 +103,4 @@ services:
 
 volumes:
   pgdata:
+  uploads_data:

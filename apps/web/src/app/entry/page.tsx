@@ -2,6 +2,7 @@
 
 import { QuickEntry } from "@/components/QuickEntry";
 import { TopBar } from "@/components/TopBar";
+import { Skeleton, SkeletonList } from "@/components/Skeleton";
 import { useSession } from "@/lib/auth-client";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
@@ -18,7 +19,10 @@ export default function EntryPage() {
     return (
       <>
         <TopBar />
-        <div className="container muted">載入中…</div>
+        <div className="container">
+          <Skeleton width={120} height={28} style={{ marginBottom: 20 }} />
+          <SkeletonList rows={3} />
+        </div>
       </>
     );
   }

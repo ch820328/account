@@ -1,5 +1,5 @@
 import { type Database, accounts, transactions } from "@acc/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNotNull, sql } from "drizzle-orm";
 import { isLiabilityAccount } from "./accounts";
 
 export interface AccountBalance {
@@ -35,63 +35,76 @@ export async function getAccountBalances(
   db: Database,
   userId: string,
 ): Promise<AccountBalance[]> {
-  const userAccounts = await db
-    .select()
-    .from(accounts)
-    .where(and(eq(accounts.userId, userId), eq(accounts.archived, false)))
-    .orderBy(accounts.createdAt);
+  // 1. Fetch user accounts and database-level aggregated sums concurrently
+  const [userAccounts, outgoingStats, incomingStats] = await Promise.all([
+    db
+      .select()
+      .from(accounts)
+      .where(and(eq(accounts.userId, userId), eq(accounts.archived, false)))
+      .orderBy(accounts.createdAt),
+
+    db
+      .select({
+        accountId: transactions.accountId,
+        incomeMinor: sql<bigint>`coalesce(sum(case when ${transactions.type} = 'income' then ${transactions.amountMinor} else 0 end), 0)::bigint`,
+        expenseMinor: sql<bigint>`coalesce(sum(case when ${transactions.type} = 'expense' then ${transactions.amountMinor} else 0 end), 0)::bigint`,
+        outTransferMinor: sql<bigint>`coalesce(sum(case when ${transactions.type} = 'transfer' then ${transactions.amountMinor} else 0 end), 0)::bigint`,
+      })
+      .from(transactions)
+      .where(eq(transactions.userId, userId))
+      .groupBy(transactions.accountId),
+
+    db
+      .select({
+        accountId: transactions.transferAccountId,
+        inTransferMinor: sql<bigint>`coalesce(sum(coalesce(${transactions.transferAmountMinor}, ${transactions.amountMinor})), 0)::bigint`,
+      })
+      .from(transactions)
+      .where(
+        and(
+          eq(transactions.userId, userId),
+          eq(transactions.type, "transfer"),
+          isNotNull(transactions.transferAccountId),
+        ),
+      )
+      .groupBy(transactions.transferAccountId),
+  ]);
 
   if (userAccounts.length === 0) return [];
 
-  const txs = await db
-    .select({
-      accountId: transactions.accountId,
-      transferAccountId: transactions.transferAccountId,
-      type: transactions.type,
-      amountMinor: transactions.amountMinor,
-    })
-    .from(transactions)
-    .where(eq(transactions.userId, userId));
-
-  const txByAccount = new Map<string, typeof txs>();
-  const incomingTransfers = new Map<string, typeof txs>();
-
-  for (const tx of txs) {
-    const list = txByAccount.get(tx.accountId) ?? [];
-    list.push(tx);
-    txByAccount.set(tx.accountId, list);
-
-    if (tx.type === "transfer" && tx.transferAccountId) {
-      const incoming = incomingTransfers.get(tx.transferAccountId) ?? [];
-      incoming.push(tx);
-      incomingTransfers.set(tx.transferAccountId, incoming);
-    }
-  }
+  const outgoingMap = new Map(
+    outgoingStats.map((s) => [s.accountId, s]),
+  );
+  const incomingMap = new Map(
+    incomingStats.filter((s): s is typeof s & { accountId: string } => Boolean(s.accountId)).map((s) => [s.accountId, s.inTransferMinor]),
+  );
 
   return userAccounts.map((acct) => {
     const isLiability = isLiabilityAccount(acct.type);
-    let balance = acct.openingBalanceMinor;
+    const out = outgoingMap.get(acct.id);
+    const inTransfer = BigInt(incomingMap.get(acct.id) ?? 0);
 
-    for (const tx of txByAccount.get(acct.id) ?? []) {
-      if (tx.type === "transfer") {
-        balance = isLiability ? balance + tx.amountMinor : balance - tx.amountMinor;
-      } else {
-        balance = applyTransactionToBalance(balance, tx.type, tx.amountMinor, isLiability);
-      }
+    const incomeSum = BigInt(out?.incomeMinor ?? 0);
+    const expenseSum = BigInt(out?.expenseMinor ?? 0);
+    const outTransfer = BigInt(out?.outTransferMinor ?? 0);
+
+    let balance = BigInt(acct.openingBalanceMinor ?? 0);
+
+    if (isLiability) {
+      // Liabilities (e.g. Credit Card, Loan): expenses and outgoing increase owed amount; income and incoming decrease it
+      balance = balance + expenseSum - incomeSum + outTransfer - inTransfer;
+    } else {
+      // Assets (e.g. Bank, Cash): income and incoming increase balance; expenses and outgoing decrease it
+      balance = balance + incomeSum - expenseSum - outTransfer + inTransfer;
     }
 
-    for (const tx of incomingTransfers.get(acct.id) ?? []) {
-      balance = isLiability
-        ? balance - tx.amountMinor
-        : balance + tx.amountMinor;
-    }
     return {
       accountId: acct.id,
       name: acct.name,
       type: acct.type,
       currency: acct.currency,
       balanceMinor: balance,
-      netMinor: isLiability ? -balance : balance,
+      netMinor: acct.excludeFromNetWorth ? 0n : (isLiability ? -balance : balance),
       isLiability,
     };
   });

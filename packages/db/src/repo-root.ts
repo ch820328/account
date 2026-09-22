@@ -36,5 +36,10 @@ export function rootEnvPath(): string {
 
 /** Load root `.env`, overriding any pre-set shell variables (e.g. stale DATABASE_URL). */
 export function loadRootEnv(): void {
-  config({ path: rootEnvPath(), override: true });
+  try {
+    const isDocker = process.env.IS_DOCKER === "true";
+    config({ path: rootEnvPath(), override: !isDocker });
+  } catch (err) {
+    // Ignore errors when monorepo root or .env cannot be found (e.g. in production containers)
+  }
 }

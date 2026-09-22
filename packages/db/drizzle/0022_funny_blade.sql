@@ -1,0 +1,1 @@
+ALTER TABLE "loan_payment_tiers" ADD COLUMN "rate_margin" numeric;

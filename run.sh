@@ -38,11 +38,52 @@ web_port() {
   fi
 }
 
+cleanup_ports() {
+  local port; port="$(web_port)"
+  # 先安全停止可能正在佔用 port 的舊容器
+  docker compose -f "$COMPOSE" stop web worker >/dev/null 2>&1 || true
+
+  # 檢查並釋放任何「監聽」該連接埠的本機殘留程序（排除 Docker 自身的後端與連線客戶端）
+  local pids; pids="$(lsof -ti:"${port}" -sTCP:LISTEN 2>/dev/null || true)"
+  if [[ -n "${pids}" ]]; then
+    for pid in ${pids}; do
+      local cmd; cmd="$(ps -p "${pid}" -o comm= 2>/dev/null || true)"
+      if [[ "$cmd" != *"docker"* && "$cmd" != *"Docker"* ]]; then
+        info "釋放佔用連接埠 ${port} 的本機程序 (PID ${pid}: ${cmd})…"
+        kill -9 "${pid}" 2>/dev/null || true
+      fi
+    done
+    sleep 0.5
+  fi
+}
+
 cmd_up() {
   command -v docker >/dev/null 2>&1 || { err "請先安裝 Docker"; exit 1; }
   ensure_env
+  cleanup_ports
   info "啟動 Docker（db + web + worker）…"
-  docker compose -f "$COMPOSE" up -d --build
+  docker compose -f "$COMPOSE" up --build -d "$@"
+  ok "已成功啟動 → http://localhost:$(web_port)"
+  ok "預設帳號 admin / admin"
+  info "查看日誌: ./run.sh logs    查看狀態: ./run.sh ps    停止服務: ./run.sh down"
+}
+
+cmd_dev() {
+  command -v docker >/dev/null 2>&1 || { err "請先安裝 Docker"; exit 1; }
+  ensure_env
+  cleanup_ports
+  info "啟動開發環境 Docker（db + web + worker，支援 Hot Reload）…"
+  docker compose up --build "$@"
+  ok "已啟動 → http://localhost:$(web_port)"
+  ok "預設帳號 admin / admin"
+  info "日誌: docker compose logs -f    狀態: docker compose ps    停止: ./run.sh down"
+}
+
+cmd_build() {
+  command -v docker >/dev/null 2>&1 || { err "請先安裝 Docker"; exit 1; }
+  ensure_env
+  info "啟動 Docker（db + web + worker）…"
+  docker compose -f "$COMPOSE" up --build
   ok "已啟動 → http://localhost:$(web_port)"
   ok "預設帳號 admin / admin"
   info "日誌: ./run.sh logs    狀態: ./run.sh ps    停止: ./run.sh down"
@@ -50,6 +91,7 @@ cmd_up() {
 
 cmd_down() {
   docker compose -f "$COMPOSE" down
+  docker compose down
   ok "已停止"
 }
 
@@ -69,9 +111,10 @@ cmd_logs() {
 cmd_help() {
   cat <<'EOF'
 用法:
-  ./run.sh            啟動 Docker（等同 up）
-  ./run.sh down       停止
-  ./run.sh restart    重啟
+  ./run.sh            啟動 Docker（生產環境，等同 up）
+  ./run.sh dev        啟動本機開發伺服器（帶資料庫與 Hot Reload）
+  ./run.sh down       停止生產環境容器
+  ./run.sh restart    重啟生產環境
   ./run.sh ps         容器狀態
   ./run.sh logs       追蹤日誌（可加服務名: web worker db）
 
@@ -84,6 +127,8 @@ main() {
   shift || true
   case "$cmd" in
     up|start|"") cmd_up "$@" ;;
+    dev)         cmd_dev "$@" ;;
+    build|rebuild) cmd_build "$@" ;;
     down|stop)   cmd_down "$@" ;;
     restart)     cmd_restart "$@" ;;
     ps|status)   cmd_ps "$@" ;;

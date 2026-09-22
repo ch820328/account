@@ -43,12 +43,23 @@ export function Amount({
     }
   }
 
+  const isNegative = value < 0n;
+  const isTwd = currency.toUpperCase() === "TWD";
+  
+  let customColorClass = "";
+  if (resolved === "expense" || isNegative) {
+    customColorClass = "amount-negative";
+  } else if (resolved === "income") {
+    customColorClass = isTwd ? "amount-twd" : "amount-foreign";
+  } else {
+    customColorClass = "amount-neutral";
+  }
+
   const variantClass =
     variant === "stat" ? "stat" : variant === "amount" ? "amount" : "money";
-  const colorClass = resolved !== "neutral" ? resolved : "";
 
   return (
-    <span className={[variantClass, colorClass, className].filter(Boolean).join(" ")}>
+    <span className={[variantClass, customColorClass, className].filter(Boolean).join(" ")}>
       {prefix}
       {fmt(displayValue, currency)}
     </span>

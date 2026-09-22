@@ -92,6 +92,125 @@
       "when": 1783406378671,
       "tag": "0012_friendly_impossible_man",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1783734555866,
+      "tag": "0013_furry_christian_walker",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1783752260218,
+      "tag": "0014_tired_johnny_storm",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1783752809960,
+      "tag": "0015_careful_phil_sheldon",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1784363510650,
+      "tag": "0016_slow_jackal",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1784364534481,
+      "tag": "0017_purple_misty_knight",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1784445888864,
+      "tag": "0018_wild_expediter",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1784447053149,
+      "tag": "0019_large_arclight",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1784448603128,
+      "tag": "0020_dear_lorna_dane",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1784450637637,
+      "tag": "0021_stale_captain_marvel",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1784517929072,
+      "tag": "0022_funny_blade",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1784519037946,
+      "tag": "0023_unique_madripoor",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1784519766890,
+      "tag": "0024_handy_squadron_supreme",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1784520648894,
+      "tag": "0025_colorful_quasimodo",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1784522708207,
+      "tag": "0026_supreme_franklin_richards",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1784554361732,
+      "tag": "0027_remarkable_zombie",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1784559731745,
+      "tag": "0028_aspiring_namor",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1784560935883,
+      "tag": "0029_add_sort_order_to_recurring_rules",
+      "breakpoints": true
     }
   ]
 }

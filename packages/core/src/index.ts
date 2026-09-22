@@ -18,3 +18,6 @@ export * from "./reports";
 export * from "./lending";
 export * from "./jobs";
 export * from "./upcoming";
+export * from "./dca";
+export * from "./tax";
+export * from "./annual-budgets";

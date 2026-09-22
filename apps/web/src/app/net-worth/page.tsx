@@ -2,14 +2,44 @@
 
 import { Amount } from "@/components/Amount";
 import { DonutChart, LineChart } from "@/components/Charts";
-import { SkeletonCard } from "@/components/Skeleton";
+import { Skeleton, SkeletonCard, SkeletonList } from "@/components/Skeleton";
 import { TopBar } from "@/components/TopBar";
 import { useSession } from "@/lib/auth-client";
-import { toMajor } from "@/lib/format";
+import { fmt, toMajor } from "@/lib/format";
 import { accountSideLabel } from "@/lib/labels";
 import { trpc } from "@/lib/trpc";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
+
+/** Renders a colored MoM or YoY delta badge. */
+function DeltaBadge({
+  deltaMinor,
+  deltaPct,
+  currency,
+  label,
+}: {
+  deltaMinor: bigint;
+  deltaPct: number | null;
+  currency: string;
+  label: string;
+}) {
+  const isPositive = deltaMinor >= 0n;
+  const arrow = isPositive ? "▲" : "▼";
+  const colorClass = isPositive ? "income" : "expense";
+  const pctStr = deltaPct != null ? ` (${isPositive ? "+" : ""}${deltaPct.toFixed(1)}%)` : "";
+
+  return (
+    <span className={colorClass} style={{ fontSize: 13, display: "inline-flex", gap: 4, alignItems: "center" }}>
+      <span>{arrow}</span>
+      <span>
+        {isPositive ? "+" : ""}
+        {fmt(deltaMinor, currency)}
+        {pctStr}
+      </span>
+      <span style={{ opacity: 0.7 }}>{label}</span>
+    </span>
+  );
+}
 
 export default function NetWorthPage() {
   const { data: session, isPending } = useSession();
@@ -21,6 +51,9 @@ export default function NetWorthPage() {
     { days: 365 },
     { enabled: !!session?.user },
   );
+  const deltas = trpc.netWorth.deltas.useQuery(undefined, {
+    enabled: !!session?.user,
+  });
 
   useEffect(() => {
     if (!isPending && !session?.user) router.replace("/login");
@@ -30,13 +63,81 @@ export default function NetWorthPage() {
     return (
       <>
         <TopBar />
-        <div className="container muted">載入中…</div>
+        <div className="container">
+          <Skeleton width={120} height={28} style={{ marginBottom: 20 }} />
+          <div className="grid cols-2" style={{ gap: 20 }}>
+            <SkeletonCard />
+            <SkeletonCard />
+          </div>
+          <div style={{ marginTop: 24 }}>
+            <SkeletonList rows={4} />
+          </div>
+        </div>
       </>
     );
   }
 
   const data = summary.data;
   const base = data?.baseCurrency ?? "TWD";
+  const deltaData = deltas.data;
+  const deltaCurrency = deltaData?.currency ?? base;
+
+  // Build detailed asset allocation segments from accounts + holdings
+  const allocationSegments = (() => {
+    if (!data) return null;
+
+    // Cash, bank, and liabilities split by TWD vs foreign currency
+    let twdCash = 0n;
+    let foreignCash = 0n;
+    let twdLiabilities = 0n;
+    let foreignLiabilities = 0n;
+    
+    for (const acct of data.accounts) {
+      if (acct.currency.toUpperCase() === base) {
+        if (acct.isLiability) twdLiabilities += acct.netMinorBase;
+        else twdCash += acct.netMinorBase;
+      } else {
+        if (acct.isLiability) foreignLiabilities += acct.netMinorBase;
+        else foreignCash += acct.netMinorBase;
+      }
+    }
+
+    // Holdings split by market (TW vs US)
+    let twStocks = 0n;
+    let usStocks = 0n;
+    for (const h of data.holdings) {
+      if (h.marketValueBaseMinor == null) continue;
+      if (h.market === "TW") {
+        twStocks += h.marketValueBaseMinor;
+      } else {
+        usStocks += h.marketValueBaseMinor;
+      }
+    }
+
+    const liabilities = twdLiabilities + foreignLiabilities;
+    const total = twdCash + foreignCash + twStocks + usStocks;
+
+    return {
+      twdCash,
+      foreignCash,
+      twStocks,
+      usStocks,
+      twdLiabilities,
+      foreignLiabilities,
+      liabilities,
+      total,
+      segments: [
+        { label: `${base} 現金`, value: toMajor(twdCash, base), color: "var(--accent)" },
+        { label: "外幣現金", value: toMajor(foreignCash, base), color: "#60b4ff" },
+        { label: "台股", value: toMajor(twStocks, base), color: "var(--income)" },
+        { label: "美股", value: toMajor(usStocks, base), color: "#b18cff" },
+        { label: "負債", value: toMajor(liabilities, base), color: "var(--expense)" },
+      ],
+    };
+  })();
+
+  const netBaseMinor = allocationSegments ? (allocationSegments.twdCash + allocationSegments.twStocks - allocationSegments.twdLiabilities) : 0n;
+  const netForeignMinor = allocationSegments ? (allocationSegments.foreignCash + allocationSegments.usStocks - allocationSegments.foreignLiabilities) : 0n;
 
   return (
     <>
@@ -55,9 +156,24 @@ export default function NetWorthPage() {
           </div>
         ) : data ? (
           <>
+            {/* ── Hero: total + MoM/YoY delta ── */}
             <div className="card hero">
               <h3>總淨值</h3>
-              <Amount value={data.totalMinor} currency={base} kind="auto" variant="stat" />
+              <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap", marginTop: 4 }}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                  <span className="muted" style={{ fontSize: 16 }}>{base}</span>
+                  <Amount value={netBaseMinor} currency={base} kind="auto" variant="stat" />
+                </div>
+                {netForeignMinor !== 0n && (
+                  <>
+                    <span className="muted" style={{ fontSize: 20 }}>+</span>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                      <span className="muted" style={{ fontSize: 14 }}>外幣等值 ≈</span>
+                      <Amount value={netForeignMinor} currency={base} kind="auto" variant="stat" />
+                    </div>
+                  </>
+                )}
+              </div>
               <div className="secondary" style={{ marginTop: 12, display: "flex", gap: 20, flexWrap: "wrap" }}>
                 <span className="income">
                   資產 <Amount value={data.assetsMinor} currency={base} kind="income" variant="inline" />
@@ -66,6 +182,33 @@ export default function NetWorthPage() {
                   負債 <Amount value={data.liabilitiesMinor} currency={base} kind="expense" variant="inline" />
                 </span>
               </div>
+              {/* MoM / YoY delta row */}
+              {deltaData && (deltaData.mom || deltaData.yoy) && (
+                <div style={{ marginTop: 12, display: "flex", gap: 16, flexWrap: "wrap" }}>
+                  {deltaData.mom && (
+                    <DeltaBadge
+                      deltaMinor={deltaData.mom.deltaMinor}
+                      deltaPct={deltaData.mom.deltaPct}
+                      currency={deltaCurrency}
+                      label="月增"
+                    />
+                  )}
+                  {deltaData.yoy && (
+                    <DeltaBadge
+                      deltaMinor={deltaData.yoy.deltaMinor}
+                      deltaPct={deltaData.yoy.deltaPct}
+                      currency={deltaCurrency}
+                      label="年增"
+                    />
+                  )}
+                  {!deltaData.mom && !deltaData.yoy && (
+                    <span className="muted" style={{ fontSize: 12 }}>快照累積中，30 天後可見月增趨勢</span>
+                  )}
+                </div>
+              )}
+              {deltas.isLoading && (
+                <Skeleton width={200} height={18} style={{ marginTop: 12 }} />
+              )}
             </div>
 
             <div className="grid cols-2" style={{ marginTop: 16 }}>
@@ -86,35 +229,26 @@ export default function NetWorthPage() {
                   </div>
                 )}
               </div>
-              <div className="card">
+              <div className="card" style={{ flex: 1, minWidth: 280 }}>
                 <h3>資產配置</h3>
-                <DonutChart
-                  segments={[
-                    {
-                      label: "現金／銀行",
-                      value: toMajor(data.cashAndBankMinor, base),
-                      color: "var(--accent)",
-                    },
-                    {
-                      label: "投資",
-                      value: toMajor(data.investmentsMinor, base),
-                      color: "var(--income)",
-                    },
-                    {
-                      label: "其他資產",
-                      value: Math.max(
-                        0,
-                        toMajor(data.assetsMinor - data.cashAndBankMinor - data.investmentsMinor, base),
-                      ),
-                      color: "#b18cff",
-                    },
-                    {
-                      label: "負債",
-                      value: toMajor(data.liabilitiesMinor, base),
-                      color: "var(--expense)",
-                    },
-                  ]}
-                />
+                <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+                  {allocationSegments?.segments
+                    .filter((s) => s.value > 0)
+                    .map((s) => (
+                      <div key={s.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <span style={{ width: 12, height: 12, borderRadius: "50%", background: s.color }} />
+                          <span style={{ fontSize: 14 }}>{s.label}</span>
+                        </div>
+                        <div style={{ textAlign: "right" }}>
+                          <div style={{ fontSize: 14, fontWeight: 600 }}>{fmt(BigInt(Math.round(s.value * 100)), base)}</div>
+                          <div className="muted" style={{ fontSize: 12 }}>
+                            {((s.value / (toMajor(allocationSegments.total + allocationSegments.liabilities, base))) * 100).toFixed(1)}%
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                </div>
               </div>
             </div>
 
